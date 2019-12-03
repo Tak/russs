@@ -1,7 +1,8 @@
 extern crate gtk;
 
 mod ui;
-use crate::ui::ui::UI;
+mod sss;
+use crate::ui::UI;
 
 fn main() {
     if gtk::init().is_err() {

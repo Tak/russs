@@ -9,9 +9,12 @@ edition = "2018"
 [dependencies]
 [dependencies.gtk]
 version = "0.7.0"
+features = ["v3_16"]
 
 [dependencies.gio]
 version = "0.7.0"
 
 [dependencies.gdk]
 version = "0.11.0"
+
+[dependencies.base64]
