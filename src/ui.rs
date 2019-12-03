@@ -6,21 +6,27 @@ extern crate base64;
 use crate::sss::sss;
 
 use gtk::prelude::*;
-//use gio::prelude::*;
+use gio::prelude::*;
 
 use gtk::*;
+use gio::*;
 use gdk::Event;
+use std::cell::RefCell;
 
 // All UI action is on the main thread in any case
 thread_local!(static INSTANCE: UI = UI::new());
 
 pub struct UI {
     builder: Builder,
+    file_result_path: RefCell<String>,
 }
 
 impl UI {
     pub fn new() -> UI {
-        return UI{ builder: Builder::new_from_string(include_str!("ui.glade")) };
+        return UI {
+            builder: Builder::new_from_string(include_str!("ui.glade")),
+            file_result_path: RefCell::new(String::from("")),
+        };
     }
 
     pub fn run() {
@@ -130,6 +136,10 @@ impl UI {
         return Inhibit(false);
     }
 
+    fn clear_errors() {
+        UI::ui_clear_errors(&UI::get_object("mainInfoBar"), ResponseType::Close);
+    }
+
     fn ui_clear_errors(infobar: &InfoBar, _response: ResponseType) {
         infobar.hide();
     }
@@ -141,11 +151,10 @@ impl UI {
 
     fn clear_grid(grid: &Grid) {
         loop {
-            let child = grid.get_child_at(0, 0);
-            if child.is_none() {
-                break;
+            match grid.get_child_at(0, 0) {
+                None => return,
+                Some(_) => grid.remove_row(0),
             }
-            grid.remove_row(0);
         }
     }
 
@@ -194,32 +203,36 @@ impl UI {
         let total_pieces = UI::get_object::<SpinButton>("spinnerTotalPiecesText").get_value() as u32;
         let required_pieces = UI::get_object::<SpinButton>("spinnerRequiredPiecesText").get_value() as u32;
         let progress_bar: ProgressBar = UI::get_object("progressText");
-        let total_progress = secret.len();
+        let total_progress = secret.len() as f64;
         let generate_button: Button = UI::get_object("buttonGenerateText");
         let prime = 5717;
 
         UI::ui_clear_errors(&UI::get_object("mainInfoBar"), ResponseType::Close);
         generate_button.set_sensitive(false);
 
-        let result = sss::generate_string(&secret, total_pieces, required_pieces, prime, |progress| progress_bar.set_fraction(progress));
-        if result.is_err() {
-            UI::display_error(format!("Error generating shards for {}: {}", secret, result.unwrap_err()).as_str());
-            return;
-        }
-
-        let pieces = result.unwrap();
-        UI::get_object::<Label>("labelPrimeText").set_text(format!("{}", prime).as_str());
-
-        // Build result grid
-        let grid: Grid = UI::get_object("gridResultText");
-        UI::clear_grid(&grid);
-        for index in 1..pieces.len() {
-            grid.insert_row(index as i32);
-            grid.attach(&UI::get_selectable_label(format!("{}", index).as_str(), 1.0), 0, index as i32 - 1, 1, 1);
-            grid.attach(&UI::get_selectable_label(UI::encode_base64(&pieces[index - 1]).as_str(), 0.25), 1, index as i32 - 1, 1, 1);
+        match sss::generate_string(&secret,
+                                          total_pieces,
+                                          required_pieces,
+                                          prime,
+                                          Some(|progress| progress_bar.set_fraction(progress / total_progress))) {
+            Err(message) => {
+                UI::display_error(format!("Error generating shards for {}: {}", secret, message).as_str());
+                return;
+            },
+            Ok(pieces) => {
+                // Build result grid
+                let grid: Grid = UI::get_object("gridResultText");
+                UI::clear_grid(&grid);
+                for index in 1..pieces.len() {
+                    grid.insert_row(index as i32);
+                    grid.attach(&UI::get_selectable_label(format!("{}", index).as_str(), 1.0), 0, index as i32 - 1, 1, 1);
+                    grid.attach(&UI::get_selectable_label(UI::encode_base64(&pieces[index - 1]).as_str(), 0.25), 1, index as i32 - 1, 1, 1);
+                }
+            },
         }
 
         progress_bar.set_fraction(1.0);
+        UI::get_object::<Label>("labelPrimeText").set_text(format!("{}", prime).as_str());
         UI::get_object::<Frame>("frameResultsText").show_all();
         generate_button.set_sensitive(true);
     }
@@ -227,7 +240,9 @@ impl UI {
     // Generate file
 
     fn ui_validate_file() {
-        println!("TODO: validate file");
+        let valid = UI::get_object::<FileChooserButton>("buttonChooseSecretFile").get_file().is_some() &&
+            UI::get_object::<SpinButton>("spinnerTotalPiecesFile").get_value() >= UI::get_object::<SpinButton>("spinnerRequiredPiecesFile").get_value();
+        UI::get_object::<Button>("buttonGenerateFile").set_sensitive(valid);
     }
 
     fn ui_validate_file_chooser(_chooser: &FileChooserButton) {
@@ -239,12 +254,59 @@ impl UI {
     }
 
     fn ui_generate_file(_button: &Button) {
-        println!("TODO: generate file");
+        let prime = 7919;
+        let total_pieces = UI::get_object::<SpinButton>("spinnerTotalPiecesFile").get_value() as u32;
+        let required_pieces = UI::get_object::<SpinButton>("spinnerRequiredPiecesFile").get_value() as u32;
+        let progress_bar: ProgressBar = UI::get_object("progressFile");
+        let generate_button: Button = UI::get_object("buttonGenerateFile");
+
+        let secret_file = UI::get_object::<FileChooserButton>("buttonChooseSecretFile").get_file().unwrap();
+        let secret_file_path = secret_file.get_path().unwrap().into_os_string().into_string().unwrap();
+
+        let total_progress: f64;
+        match secret_file.query_info::<Cancellable>("", FileQueryInfoFlags::NONE, None) {
+            Err(_) => {
+                UI::display_error(format!("Error reading {}", secret_file_path.as_str()).as_str());
+                return;
+            },
+            Ok(info) => total_progress = info.get_size() as f64,
+        }
+
+        let parent: String;
+        match secret_file.get_parent() {
+            None => {
+                UI::display_error(format!("Error getting parent for {}", secret_file_path).as_str());
+                return;
+            },
+            Some(file) => parent = file.get_uri().to_string(),
+        }
+
+        UI::clear_errors();
+        generate_button.set_sensitive(false);
+
+        match sss::generate_file(secret_file_path.as_str(),
+                                        total_pieces,
+                                        required_pieces,
+                                        prime,
+                                        Some(|progress| progress_bar.set_fraction(progress / total_progress))) {
+            Err(message) => UI::display_error(format!("Error generating shards for {}: {}", secret_file_path, message).as_str()),
+            Ok(()) => {
+                INSTANCE.with(|instance| instance.file_result_path.replace(parent));
+                UI::get_object::<Frame>("frameResultsFile").show_all();
+            },
+        }
+
+        progress_bar.set_fraction(1.0);
+        generate_button.set_sensitive(true);
     }
 
     fn ui_open_file(_button: &Button) {
-        println!("TODO: open result directory");
+        let _result = INSTANCE.with(|instance| {
+            gio::AppInfo::launch_default_for_uri::<AppLaunchContext>(&instance.file_result_path.borrow().as_str(), None)
+        });
     }
+
+    // Reconstruct text
 
     fn ui_validate_reconstruct_text() {
         println!("TODO: validate reconstruct text")
@@ -257,6 +319,8 @@ impl UI {
     fn ui_validate_reconstruct_text_spinner(_spinner: &SpinButton) {
         UI::ui_validate_reconstruct_text();
     }
+
+    // Reconstruct file
 
     fn ui_validate_reconstruct_file() {
         println!("TODO: validate reconstruct file")
