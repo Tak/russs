@@ -101,7 +101,7 @@ impl UI {
         }
 
         let button_reconstruct_text: Button = self.get_object_instance("buttonReconstructText");
-        button_reconstruct_text.connect_clicked(UI::ui_generate_file);
+        button_reconstruct_text.connect_clicked(UI::ui_reconstruct_text);
 
         // Reconstruct file
 
@@ -223,10 +223,10 @@ impl UI {
                 // Build result grid
                 let grid: Grid = UI::get_object("gridResultText");
                 UI::clear_grid(&grid);
-                for index in 1..pieces.len() {
-                    grid.insert_row(index as i32);
-                    grid.attach(&UI::get_selectable_label(format!("{}", index).as_str(), 1.0), 0, index as i32 - 1, 1, 1);
-                    grid.attach(&UI::get_selectable_label(UI::encode_base64(&pieces[index - 1]).as_str(), 0.25), 1, index as i32 - 1, 1, 1);
+                for index in 0..pieces.len() as i32 {
+                    grid.insert_row(index);
+                    grid.attach(&UI::get_selectable_label(format!("{}", index).as_str(), 1.0), 0, index, 1, 1);
+                    grid.attach(&UI::get_selectable_label(UI::encode_base64(&pieces[index as usize]).as_str(), 0.25), 1, index, 1, 1);
                 }
             },
         }
@@ -309,15 +309,73 @@ impl UI {
     // Reconstruct text
 
     fn ui_validate_reconstruct_text() {
-        println!("TODO: validate reconstruct text")
+        let mut valid = UI::get_object::<Entry>("entryReconstructTextPrimeModulator").get_text().unwrap().as_str().parse::<i32>().is_ok();
+
+        if valid {
+            let grid: Grid = UI::get_object("gridReconstructTextPieces");
+            let pieces_count = UI::get_object::<SpinButton>("spinnerReconstructTextPieces").get_value() as i32;
+
+            valid = (0..pieces_count).all(|index| {
+                grid.get_child_at(0, index).unwrap().downcast::<Entry>().unwrap().get_text().unwrap().as_str().parse::<i32>().is_ok() &&
+                base64::decode_config(grid.get_child_at(1, index).unwrap().downcast::<Entry>().unwrap().get_text().unwrap().as_str(), base64::URL_SAFE).is_ok()
+            });
+        }
+
+        UI::get_object::<Button>("buttonReconstructText").set_sensitive(valid);
     }
 
     fn ui_validate_reconstruct_text_entry(_entry: &Entry) {
         UI::ui_validate_reconstruct_text();
     }
 
+    fn get_custom_entry(placeholder_text: &str, input_purpose: InputPurpose) -> Entry {
+        let entry = Entry::new();
+        entry.set_placeholder_text(Some(placeholder_text));
+        entry.set_input_purpose(input_purpose);
+        entry.connect_changed(UI::ui_validate_reconstruct_text_entry);
+        return entry;
+    }
+
     fn ui_validate_reconstruct_text_spinner(_spinner: &SpinButton) {
+        let grid: Grid = UI::get_object("gridReconstructTextPieces");
+        let pieces_count = UI::get_object::<SpinButton>("spinnerReconstructTextPieces").get_value() as i32;
+
+        UI::clear_grid(&grid);
+
+        for row in 0..pieces_count {
+            grid.insert_row(row);
+            grid.attach(&UI::get_custom_entry("Index", InputPurpose::Digits), 0, row, 1, 1);
+            grid.attach(&UI::get_custom_entry("Secret shard", InputPurpose::FreeForm), 1, row, 1, 1);
+        }
+        grid.show_all();
         UI::ui_validate_reconstruct_text();
+    }
+
+    fn ui_reconstruct_text(_button: &Button) {
+        let prime =  UI::get_object::<Entry>("entryReconstructTextPrimeModulator").get_text().unwrap().as_str().parse::<i32>().unwrap();
+        let progress_bar: ProgressBar = UI::get_object("progressReconstructText");
+        let generate_button: Button = UI::get_object("buttonReconstructText");
+        let grid: Grid = UI::get_object("gridReconstructTextPieces");
+        let pieces_count = UI::get_object::<SpinButton>("spinnerReconstructTextPieces").get_value() as i32;
+
+        generate_button.set_sensitive(false);
+
+        let pieces: Vec<(i32, Vec<u8>)> = (0..pieces_count).map(|index| {
+            (grid.get_child_at(0, index).unwrap().downcast::<Entry>().unwrap().get_text().unwrap().as_str().parse::<i32>().unwrap(),
+            base64::decode_config(grid.get_child_at(1, index).unwrap().downcast::<Entry>().unwrap().get_text().unwrap().as_str(), base64::URL_SAFE).unwrap())
+        }).collect();
+        let total_progress = pieces[0].1.len() as f64;
+
+        match sss::interpolate_strings(pieces, prime, Some(|progress| progress_bar.set_fraction(progress / total_progress))) {
+            Ok(secret) => {
+                UI::get_object::<Label>("labelReconstructTextSecret").set_text(base64::encode_config(&secret, base64::URL_SAFE).as_str());
+                UI::get_object::<Box>("boxReconstructTextSecret").show_all();
+            },
+            Err(message) => UI::display_error(format!("Error reconstructing text: {}", message).as_str()),
+        }
+
+        progress_bar.set_fraction(1.0);
+        generate_button.set_sensitive(true);
     }
 
     // Reconstruct file

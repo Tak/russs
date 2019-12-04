@@ -18,4 +18,9 @@ pub mod sss {
         println!("TODO: generate file");
         return Result::Ok(());
     }
+
+    pub fn interpolate_strings<T>(pieces: Vec<(i32, Vec<u8>)>, prime: i32, progress_callback: Option<T>) -> Result<Vec<u8>, &'static str>
+        where T: Fn(f64) {
+        return Result::Ok(pieces[0].1.clone());
+    }
 }
