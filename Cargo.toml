@@ -19,3 +19,6 @@ version = "0.11.0"
 
 [dependencies.base64]
 version = "0.11.0"
+
+[dependencies.rand]
+version = "0.7.2"

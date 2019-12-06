@@ -369,7 +369,7 @@ impl UI {
         }).collect();
         let total_progress = pieces[0].1.len() as f64;
 
-        match sss::interpolate_strings(pieces, prime, Some(|progress| progress_bar.set_fraction(progress / total_progress))) {
+        match sss::interpolate_strings(&pieces, prime, Some(|progress| progress_bar.set_fraction(progress / total_progress))) {
             Ok(secret) => {
                 UI::get_object::<Label>("labelReconstructTextSecret").set_text(base64::encode_config(&secret, base64::URL_SAFE).as_str());
                 UI::get_object::<Box>("boxReconstructTextSecret").show_all();
