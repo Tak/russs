@@ -3,7 +3,7 @@ extern crate gdk;
 extern crate gio;
 extern crate base64;
 
-use crate::sss::sss;
+use crate::sss;
 
 use gtk::prelude::*;
 use gio::prelude::*;
