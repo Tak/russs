@@ -19,6 +19,7 @@ thread_local!(static INSTANCE: UI = UI::new());
 pub struct UI {
     builder: Builder,
     file_result_path: RefCell<String>,
+    reconstructed_file_result_path: RefCell<String>,
 }
 
 impl UI {
@@ -26,6 +27,7 @@ impl UI {
         return UI {
             builder: Builder::new_from_string(include_str!("ui.glade")),
             file_result_path: RefCell::new(String::from("")),
+            reconstructed_file_result_path: RefCell::new(String::from("")),
         };
     }
 
@@ -301,7 +303,7 @@ impl UI {
     }
 
     fn ui_open_file(_button: &Button) {
-        let _result = INSTANCE.with(|instance| {
+        let _ = INSTANCE.with(|instance| {
             gio::AppInfo::launch_default_for_uri::<AppLaunchContext>(&instance.file_result_path.borrow().as_str(), None)
         });
     }
@@ -358,6 +360,7 @@ impl UI {
         let grid: Grid = UI::get_object("gridReconstructTextPieces");
         let pieces_count = UI::get_object::<SpinButton>("spinnerReconstructTextPieces").get_value() as i32;
 
+        UI::clear_errors();
         generate_button.set_sensitive(false);
 
         let pieces: Vec<(i32, Vec<u8>)> = (0..pieces_count).map(|index| {
@@ -381,18 +384,51 @@ impl UI {
     // Reconstruct file
 
     fn ui_validate_reconstruct_file() {
-        println!("TODO: validate reconstruct file")
+        let pieces = UI::get_object::<FileChooserDialog>("chooserReconstructFileChoosePieces").get_files();
+        let valid = pieces.len() > 1;
+
+        if valid {
+            UI::get_object::<Button>("buttonReconstructFileChoosePieces").set_label(format!("({} files)", pieces.len()).as_str());
+        }
+        UI::get_object::<Button>("buttonReconstructFile").set_sensitive(valid);
     }
 
     fn ui_choose_pieces_reconstruct_file(_button: &Button) {
-        println!("TODO: show reconstruct file pieces chooser dialog");
+        let dialog: FileChooserDialog = UI::get_object("chooserReconstructFileChoosePieces");
+        dialog.run();
+        dialog.hide();
+        UI::ui_validate_reconstruct_file();
     }
 
     fn ui_reconstruct_file(_button: &Button) {
-        println!("TODO: reconstruct file");
+        let reconstruct_button: Button = UI::get_object("buttonReconstructFile");
+        let progress_bar: ProgressBar = UI::get_object("progressReconstructFile");
+
+        UI::clear_errors();
+        reconstruct_button.set_sensitive(false);
+
+        let piece_files = UI::get_object::<FileChooserDialog>("chooserReconstructFileChoosePieces").get_files();
+        let pieces: Vec<String> = piece_files.iter().map(|file| {
+            file.get_path().unwrap().into_os_string().into_string().unwrap()
+        }).collect();
+        let destination = piece_files[0].get_parent().unwrap().get_path().unwrap().into_os_string().into_string().unwrap();
+        let total_progress = piece_files[0].query_info::<Cancellable>("", FileQueryInfoFlags::NONE, None).unwrap().get_size() as f64;
+
+        match sss::interpolate_file(pieces, destination.as_str(), Some(|progress| progress_bar.set_fraction(progress / total_progress))) {
+            Err(message) => UI::display_error(format!("Error reconstructing file: {}", message).as_str()),
+            Ok(output_file) => {
+                INSTANCE.with(|instance| instance.reconstructed_file_result_path.replace(output_file));
+                UI::get_object::<Frame>("frameReconstructFileResults").show_all();
+            },
+        }
+
+        progress_bar.set_fraction(1.0);
+        reconstruct_button.set_sensitive(true);
     }
 
     fn ui_open_reconstruct_file(_button: &Button) {
-        println!("TODO: open reconstructed file");
+        let _ = INSTANCE.with(|instance| {
+            gio::AppInfo::launch_default_for_uri::<AppLaunchContext>(format!("file://{}", &instance.reconstructed_file_result_path.borrow().as_str()).as_str(), None)
+        });
     }
 }
