@@ -216,7 +216,7 @@ impl UI {
                                           total_pieces,
                                           required_pieces,
                                           prime,
-                                          Some(|progress| progress_bar.set_fraction(progress / total_progress))) {
+                                          |progress| progress_bar.set_fraction(progress / total_progress)) {
             Err(message) => {
                 UI::display_error(format!("Error generating shards for {}: {}", secret, message).as_str());
                 return;
@@ -290,7 +290,7 @@ impl UI {
                                         total_pieces,
                                         required_pieces,
                                         prime,
-                                        Some(|progress| progress_bar.set_fraction(progress / total_progress))) {
+                                        |progress| progress_bar.set_fraction(progress / total_progress)) {
             Err(message) => UI::display_error(format!("Error generating shards for {}: {}", secret_file_path, message).as_str()),
             Ok(()) => {
                 INSTANCE.with(|instance| instance.file_result_path.replace(parent));
@@ -369,7 +369,7 @@ impl UI {
         }).collect();
         let total_progress = pieces[0].1.len() as f64;
 
-        match sss::interpolate_strings(&pieces, prime, Some(|progress| progress_bar.set_fraction(progress / total_progress))) {
+        match sss::interpolate_strings(&pieces, prime, |progress| progress_bar.set_fraction(progress / total_progress)) {
             Ok(secret) => {
                 UI::get_object::<Label>("labelReconstructTextSecret").set_text(base64::encode_config(&secret, base64::URL_SAFE).as_str());
                 UI::get_object::<Box>("boxReconstructTextSecret").show_all();

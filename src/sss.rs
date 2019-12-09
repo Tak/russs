@@ -9,8 +9,8 @@ use num_bigint::{BigInt, ToBigInt};
 use num_traits::ToPrimitive;
 use num_traits::identities::{Zero, One};
 
-pub fn generate_string<T>(secret: &str, pieces_count: u32, required_pieces_count: u32, prime: u32, progress_callback: Option<T>) -> Result<Vec<Vec<u8>>, String>
-    where T: Fn(f64) {
+pub fn generate_string<T>(secret: &str, pieces_count: u32, required_pieces_count: u32, prime: u32, mut progress_callback: T) -> Result<Vec<Vec<u8>>, String>
+    where T: FnMut(f64) {
     println!("TODO: generate string");
     let mut pieces: Vec<Vec<u8>> = Vec::new();
     for i in 1..pieces_count {
@@ -23,21 +23,21 @@ pub fn generate_string<T>(secret: &str, pieces_count: u32, required_pieces_count
     return Result::Ok(pieces);
 }
 
-pub fn generate_file<T>(secret_file_path: &str, pieces_count: u32, required_pieces_count: u32, prime: u32, progress_callback: Option<T>) -> Result<(), String>
-    where T: Fn(f64) {
+pub fn generate_file<T>(secret_file_path: &str, pieces_count: u32, required_pieces_count: u32, prime: u32, mut progress_callback: T) -> Result<(), String>
+    where T: FnMut(f64) {
     println!("TODO: generate file");
     return Result::Ok(());
 }
 
-pub fn interpolate_strings<TPiecesCollection, TBytesCollection, TCallback>(pieces: &TPiecesCollection, prime: i32, progress_callback: Option<TCallback>) -> Result<Vec<u8>, String>
-    where TCallback: Fn(f64),
+pub fn interpolate_strings<TPiecesCollection, TBytesCollection, TCallback>(pieces: &TPiecesCollection, prime: i32, mut progress_callback: TCallback) -> Result<Vec<u8>, String>
+    where TCallback: FnMut(f64),
         TPiecesCollection: AsRef<[(i32, TBytesCollection)]>,
         TBytesCollection: AsRef<[u8]> {
                    return Result::Ok(Vec::new());
 }
 
-pub fn interpolate_file<T>(pieces: Vec<String>, destination: &str, progress_callback: Option<T>) -> Result<String, String>
-    where T: Fn(f64) {
+pub fn interpolate_file<T>(pieces: Vec<String>, destination: &str, mut progress_callback: Option<T>) -> Result<String, String>
+    where T: FnMut(f64) {
     return Result::Ok(format!("{}/{}", destination, "secret.mp4"));
 }
 
@@ -144,20 +144,10 @@ fn  multiply_all<TValues, TElement>(values: &TValues) -> BigInt
 }
 
 //# Generate the first piecesCount values for the polynomial for each byte in secret
-//def self.generate_buffer(secret, piecesCount, requiredPiecesCount, prime)
-//pointBuffers = (1..piecesCount).collect{ |index| [index, []] }
-//secret.each_with_index do |byte, byteIndex|
-//generate_points(byte, piecesCount, generate_coefficients(requiredPiecesCount, prime), prime).each { |point|
-//pointBuffers[point[0] - 1][1] << point[1]
-//}
-//yield byteIndex if block_given?
-//end
-//return pointBuffers
-//end
-fn generate_buffer<TSecret, TProgress>(secret: TSecret, total_pieces: i32, required_pieces: i32, prime: i32, progress_callback: Option<TProgress>) -> Vec<(i32, Vec<i16>)>
+fn generate_buffer<TSecret, TProgress>(secret: TSecret, total_pieces: i32, required_pieces: i32, prime: i32, mut progress_callback: TProgress) -> Vec<(i32, Vec<i16>)>
     where TSecret: AsRef<[u8]>,
-        TProgress: Fn(f64) + Copy {
-    let mut result: Vec<(i32, Vec<i16>)> = (0..total_pieces).map(|index| (index, Vec::new())).collect();
+        TProgress: FnMut(f64) {
+    let mut result: Vec<(i32, Vec<i16>)> = (0..total_pieces).map(|index| (index + 1, Vec::new())).collect();
     let my_secret = secret.as_ref();
     let total_progress = my_secret.len() as f64;
 
@@ -165,9 +155,7 @@ fn generate_buffer<TSecret, TProgress>(secret: TSecret, total_pieces: i32, requi
         for point in generate_points(my_secret[i] as i32, total_pieces, &generate_coefficients(required_pieces, prime), prime) {
             result[point.0 as usize - 1].1.push(point.1 as i16)
         }
-        if progress_callback.is_some() {
-            progress_callback.unwrap()(i as f64 / total_progress);
-        }
+        progress_callback(i as f64 / total_progress);
     }
 
     return result;
@@ -186,6 +174,42 @@ fn  validate_points<T>(points: &T, prime: i32) -> Result<(), String>
 
     return Ok(());
 }
+
+fn validate_buffers<TContainer, TByteBuffer>(buffers: &TContainer) -> Result<(), String>
+    where TContainer: AsRef<[(i32, TByteBuffer)]>,
+        TByteBuffer: AsRef<[i16]> {
+    let my_buffers = buffers.as_ref();
+    let length = my_buffers[0].1.as_ref().len();
+
+    return if buffers.as_ref().iter().all(|buffer| buffer.1.as_ref().len() == length) {
+        Ok(())
+    } else {
+        Err(String::from("Differing buffer lengths"))
+    }
+}
+
+//# Solve for each set of points in points and return an ordered array of solutions
+fn interpolate_buffer<TContainer, TPointBuffer, TProgress>(points: &TContainer, prime: i32, mut progress_callback: TProgress) -> Result<Vec<u8>, String>
+    where TContainer: AsRef<[(i32, TPointBuffer)]>,
+        TPointBuffer: AsRef<[i16]>,
+        TProgress: FnMut(f64) {
+    let my_points = points.as_ref();
+    validate_buffers(&my_points)?;
+
+    let point_count = my_points[0].1.as_ref().len();
+    let mut result: Vec<u8> = Vec::new();
+
+    for i in 0..point_count {
+        match interpolate_secret(&my_points.iter().map(|point| (point.0, point.1.as_ref()[i] as i32)).collect::<Vec<(i32, i32)>>(), prime) {
+            Err(message) => return Err(message),
+            Ok(value) => result.push(value as u8),
+        }
+        progress_callback(i as f64 / point_count as f64);
+    }
+
+    return Ok(result);
+}
+
 
 
 #[cfg(test)]
@@ -296,33 +320,53 @@ mod  tests {
         let total_pieces = 6;
         let required_pieces = 3;
         let prime = 1613;
-        let progress: Option<&dyn Fn(f64)> = None;
 
-        let pieces = generate_buffer(secret, total_pieces, required_pieces, prime, progress);
+        let pieces = generate_buffer(secret, total_pieces, required_pieces, prime, |_|{});
 
         assert_eq!(pieces.len(), total_pieces as usize);
     }
 
 
     //    it "validates buffers" do
-//    secret = (1..32).collect{ Random.rand(256) }
-//prime = 5717
-//buffers = Hiss::Hiss.generate_buffer(secret, 5, 3, prime)
-//malformedBuffer = buffers.collect{ |buffer| buffer.clone() }
-//malformedBuffer[0].slice!(1)
-//mismatchingBuffer = buffers.collect{ |buffer| buffer.clone() }
-//mismatchingBuffer[0][1].slice!(1)
-//testData = [
-//malformedBuffer,      # Malformed input
-//mismatchingBuffer     # Mismatching lengths
-//]
-//testData.each{ |testDatum|
-//expect{ Hiss::Hiss.interpolate_buffer(testDatum, prime) }.to raise_exception(RuntimeError)
-//}
-//end
     #[test]
     fn test_validate_buffers() {
-//        let secret: Vec<u8> = (1..32).map(random()).collect();
-//        let prime = 5717;
+        let secret: Vec<u8> = (1..32).map(|_| random()).collect();
+        let prime = 5717;
+
+        let mut buffers = generate_buffer(&secret, 5, 3, prime, |_|{});
+        buffers[0].1.remove(1);
+
+        assert!(interpolate_buffer(&buffers, prime, |_|{}).is_err());
     }
+
+    fn roundtrip_buffer<TSecret, TProgress>(secret: &TSecret, mut progress_callback: TProgress) -> Result<Vec<u8>, String>
+        where TSecret: AsRef<[u8]>,
+            TProgress: FnMut(f64) {
+        let total_pieces = 8;
+        let required_pieces = 5;
+        let prime = 5717;
+        let mut last_progress: f64 = 0.0;
+
+        let pieces = generate_buffer(secret, total_pieces, required_pieces, prime, |progress| {
+            assert!(progress >= last_progress);
+            last_progress = progress;
+            progress_callback(progress);
+        });
+
+        last_progress = 0.0;
+        return interpolate_buffer(&pieces, prime, |progress| {
+            assert!(progress >= last_progress);
+            last_progress = progress;
+            progress_callback(progress);
+        });
+    }
+
+    //    it "successfully roundtrips a random buffer" do
+    #[test]
+    fn test_roundtrip_buffer() {
+        let secret: Vec<u8> = (0..32).map(|_| random::<u8>()).collect();
+        let calculated_secret = roundtrip_buffer(&secret, |_|{}).unwrap();
+        assert_eq!(secret, calculated_secret);
+    }
+
 }
