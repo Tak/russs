@@ -1,6 +1,13 @@
 extern crate rand;
+extern crate modulo;
+extern crate num_bigint;
+extern crate num_traits;
 
 use rand::prelude::*;
+use modulo::Mod;
+use num_bigint::{BigInt, ToBigInt};
+use num_traits::ToPrimitive;
+use num_traits::identities::{Zero, One};
 
 pub fn generate_string<T>(secret: &str, pieces_count: u32, required_pieces_count: u32, prime: u32, progress_callback: Option<T>) -> Result<Vec<Vec<u8>>, String>
     where T: Fn(f64) {
@@ -44,24 +51,116 @@ fn  generate_coefficients(required_pieces_count: i32, prime: i32) -> Vec<i32> {
 // Generate the first pieces_count points on the polynomial described by coefficients
 fn  generate_points<T>(secret: i32, pieces_count: i32, coefficients: &T, prime: i32) -> Vec<(i32, i32)>
     where T: AsRef<[i32]> {
-    let my_coefficients: &[i32] = coefficients.as_ref().into();
+    let my_coefficients: &[i32] = coefficients.as_ref();
     let mut pieces : Vec<(i32, i32)> = (0..(pieces_count + 1)).map(|x| {
         let mut sum = secret;
         for index in 0..my_coefficients.len() {
             sum += my_coefficients[index] * (x.pow(index as u32 + 1));
         }
-        (x, sum % prime)
+        (x, Mod::modulo(sum, prime))
     }).collect();
     pieces.remove(0);
     return pieces;
 }
 
+// Solve for the 0th-order term of the lagrange polynomial partially described by points
+// in the prime finite field for prime
+fn  interpolate_secret<T>(points: &T, prime: i32) -> Result<i32, String>
+    where T: AsRef<[(i32, i32)]> {
+    let my_points: &[(i32, i32)] = points.as_ref();
+    validate_points(&my_points, prime)?;
+
+    let x_values : Vec<i32> = my_points.iter().map(|point| point.0).collect();
+    let y_values : Vec<i32> = my_points.iter().map(|point| point.1).collect();
+
+    let mut numerators: Vec<BigInt> = Vec::new();
+    let mut denominators: Vec<BigInt> = Vec::new();
+
+    for index in 0..x_values.len() {
+        let mut other_x_values = x_values.clone();
+        let this_x = other_x_values.remove(index);
+
+        numerators.push(multiply_all(&other_x_values.iter().map(|x| 0 - *x).collect::<Vec<i32>>()));
+        denominators.push(multiply_all(&other_x_values.iter().map(|x| this_x - *x).collect::<Vec<i32>>()));
+    }
+
+    let denominator = multiply_all(&denominators);
+    let mut numerator = BigInt::zero();
+    for index in 0..x_values.len() {
+        numerator += divide_and_apply_modulus(&Mod::modulo(&numerators[index] * &denominator * &y_values[index].to_bigint().unwrap(), prime), &denominators[index], prime);
+    }
+
+    let result = Mod::modulo(divide_and_apply_modulus(&numerator, &denominator, prime) + prime, prime);
+    return match result.to_i32() {
+        None => Err(format!("Error interpolating secret: integer overflow for {}", result)),
+        Some(value) => Ok(value),
+    }
+}
+
+fn  divide_and_apply_modulus<T>(numerator: &T, denominator: &T, prime: i32) -> BigInt
+    where T: Into<BigInt> + Clone {
+    return numerator.clone().into() * modular_multiplicative_inverse(&denominator.clone().into(), &prime.to_bigint().unwrap()).0;
+}
+
+// https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm
+fn  modular_multiplicative_inverse<T>(a: &T, z: &T) -> (BigInt, BigInt)
+    where T: Into<BigInt> + Clone {
+    let mut x = BigInt::zero();
+    let mut last_x = BigInt::one();
+    let mut y = BigInt::one();
+    let mut last_y = BigInt::zero();
+    let mut a: BigInt = a.clone().into();
+    let mut z: BigInt = z.clone().into();
+
+    while z != BigInt::zero() {
+        let integer_quotient = &a / &z;
+        let new_a = z.clone();
+        z = Mod::modulo(&a , &z);
+        a = new_a;
+
+        let new_x = &last_x - (&integer_quotient * &x);
+        last_x = x;
+        x = new_x;
+
+        let new_y = &last_y - (&integer_quotient * &y);
+        last_y = y;
+        y = new_y;
+    }
+
+    return (last_x, last_y);
+}
+
+fn  multiply_all<TValues, TElement>(values: &TValues) -> BigInt
+    where TValues: AsRef<[TElement]>,
+        TElement: Into<BigInt> + Clone {
+    let mut total = BigInt::one();
+    let my_values: &[TElement] = values.as_ref();
+
+    for value in my_values {
+        total *= value.clone().into();
+    }
+
+    return total;
+}
+
+fn  validate_points<T>(points: &T, prime: i32) -> Result<(), String>
+    where T: AsRef<[(i32, i32)]> {
+    let my_points: &[(i32, i32)] = points.as_ref();
+
+    if my_points.len() < 2 {
+        return Err(format!("Insufficient number of inputs ({})", my_points.len()));
+    }
+    if my_points.iter().any(|point| point.1 >= prime) {
+        return Err(format!("Prime {} must be greater than all values {:?}", prime, my_points));
+    }
+
+    return Ok(());
+}
 
 
 #[cfg(test)]
 mod  tests {
     use super::*;
-    use std::borrow::Borrow;
 
     //    it "generates n-1 coefficients, all less than prime" do
     #[test]
@@ -93,6 +192,70 @@ mod  tests {
             assert_eq!(points[index].0, index as i32 + 1);
             assert_eq!(points[index].1, expected_y_values[index]);
         }
+    }
+
+    //    it "validates single inputs" do
+    #[test]
+    fn  test_validate_points() {
+        let prime = 5717;
+        assert!(validate_points(&[(1, 1)], prime).is_err()); // Not enough points
+        assert!(validate_points(&[(1, 50001), (2, 20000), (3, 30000)], prime).is_err()); // Prime too small for y-values
+    }
+
+    //        it "creates a product of inputs" do
+    #[test]
+    fn  test_multiply_all() {
+        let empty_values: [i32; 0] = [];
+        assert_eq!(multiply_all(&empty_values), BigInt::one());
+
+        let test_data = [
+            ([1, 2, 3], 6),
+            ([2, -1, 2], -4),
+            ([0, -43, 112], 0),
+        ];
+
+        for test_datum in &test_data {
+            assert_eq!(multiply_all(&test_datum.0), test_datum.1.to_bigint().unwrap());
+        }
+    }
+
+    //    it "calculates modular multiplicative inverse given known inputs" do
+    #[test]
+    fn test_modular_multiplicative_inverse() {
+        let test_data = [
+            ((-4, 3617), 904),
+            ((-4, 7211), -1803),
+        ];
+
+        for test_datum in &test_data {
+            let inverse = modular_multiplicative_inverse(&(test_datum.0).0.to_bigint().unwrap(), &(test_datum.0).1.to_bigint().unwrap()).0;
+            assert_eq!(inverse, test_datum.1.to_bigint().unwrap());
+            assert_eq!(Mod::modulo((test_datum.0).0 * inverse, (test_datum.0).1), BigInt::one());
+        }
+    }
+
+
+    // TODO: Move to integration tests
+    // It's not straightforward to do integration tests with an executable crate,
+    // need to reorganize into a lib + an executable before that will be feasible
+
+    //    it "successfully roundtrips a single random value" do
+    #[test]
+    fn test_interpolate_points() -> Result<(), String> {
+        let prime = 5717;
+        let secret = thread_rng().gen_range(0, prime);
+        let number_of_pieces = 8;
+        let required_pieces = 5;
+        println!("Secret is {}", secret);
+
+
+        let points = generate_points(secret, number_of_pieces, &generate_coefficients(required_pieces, prime), prime);
+        for point in &points {
+            assert!(point.1 < prime);
+        }
+
+        assert_eq!(interpolate_secret(&points, prime)?, secret);
+        Ok(())
     }
 
 }
