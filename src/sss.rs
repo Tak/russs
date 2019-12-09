@@ -143,6 +143,36 @@ fn  multiply_all<TValues, TElement>(values: &TValues) -> BigInt
     return total;
 }
 
+//# Generate the first piecesCount values for the polynomial for each byte in secret
+//def self.generate_buffer(secret, piecesCount, requiredPiecesCount, prime)
+//pointBuffers = (1..piecesCount).collect{ |index| [index, []] }
+//secret.each_with_index do |byte, byteIndex|
+//generate_points(byte, piecesCount, generate_coefficients(requiredPiecesCount, prime), prime).each { |point|
+//pointBuffers[point[0] - 1][1] << point[1]
+//}
+//yield byteIndex if block_given?
+//end
+//return pointBuffers
+//end
+fn generate_buffer<TSecret, TProgress>(secret: TSecret, total_pieces: i32, required_pieces: i32, prime: i32, progress_callback: Option<TProgress>) -> Vec<(i32, Vec<i16>)>
+    where TSecret: AsRef<[u8]>,
+        TProgress: Fn(f64) + Copy {
+    let mut result: Vec<(i32, Vec<i16>)> = (0..total_pieces).map(|index| (index, Vec::new())).collect();
+    let my_secret = secret.as_ref();
+    let total_progress = my_secret.len() as f64;
+
+    for i in 0..my_secret.len() {
+        for point in generate_points(my_secret[i] as i32, total_pieces, &generate_coefficients(required_pieces, prime), prime) {
+            result[point.0 as usize - 1].1.push(point.1 as i16)
+        }
+        if progress_callback.is_some() {
+            progress_callback.unwrap()(i as f64 / total_progress);
+        }
+    }
+
+    return result;
+}
+
 fn  validate_points<T>(points: &T, prime: i32) -> Result<(), String>
     where T: AsRef<[(i32, i32)]> {
     let my_points: &[(i32, i32)] = points.as_ref();
@@ -258,4 +288,41 @@ mod  tests {
         Ok(())
     }
 
+//    it "generates expected point buffer given known inputs" do
+//    # https://en.wikipedia.org/wiki/Shamir%27s_Secret_Sharing
+    #[test]
+    fn test_generate_buffer() {
+        let secret = "1234";
+        let total_pieces = 6;
+        let required_pieces = 3;
+        let prime = 1613;
+        let progress: Option<&dyn Fn(f64)> = None;
+
+        let pieces = generate_buffer(secret, total_pieces, required_pieces, prime, progress);
+
+        assert_eq!(pieces.len(), total_pieces as usize);
+    }
+
+
+    //    it "validates buffers" do
+//    secret = (1..32).collect{ Random.rand(256) }
+//prime = 5717
+//buffers = Hiss::Hiss.generate_buffer(secret, 5, 3, prime)
+//malformedBuffer = buffers.collect{ |buffer| buffer.clone() }
+//malformedBuffer[0].slice!(1)
+//mismatchingBuffer = buffers.collect{ |buffer| buffer.clone() }
+//mismatchingBuffer[0][1].slice!(1)
+//testData = [
+//malformedBuffer,      # Malformed input
+//mismatchingBuffer     # Mismatching lengths
+//]
+//testData.each{ |testDatum|
+//expect{ Hiss::Hiss.interpolate_buffer(testDatum, prime) }.to raise_exception(RuntimeError)
+//}
+//end
+    #[test]
+    fn test_validate_buffers() {
+//        let secret: Vec<u8> = (1..32).map(random()).collect();
+//        let prime = 5717;
+    }
 }
