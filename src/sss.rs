@@ -3,6 +3,10 @@ extern crate modulo;
 extern crate num_bigint;
 extern crate num_traits;
 
+use std::fs::File;
+use std::io::Result as IOResult;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::convert::TryInto;
 
 use rand::prelude::*;
@@ -11,8 +15,12 @@ use num_bigint::{BigInt, ToBigInt};
 use num_traits::ToPrimitive;
 use num_traits::identities::{Zero, One};
 
-pub fn generate_string<T>(secret: &str, pieces_count: i32, required_pieces_count: i32, prime: i32, mut progress_callback: T) -> Vec<(i32, Vec<u8>)>
-    where T: FnMut(f64) {
+pub const VERSION: u32 = 1;
+const BUFFER_SIZE: usize = 8192;
+
+pub fn generate_string<TCollection, TProgress>(secret: &TCollection, pieces_count: i32, required_pieces_count: i32, prime: i32, mut progress_callback: TProgress) -> Vec<(i32, Vec<u8>)>
+    where TCollection: AsRef<[u8]> + ?Sized,
+        TProgress: FnMut(f64) {
     let points = generate_buffer(secret, pieces_count, required_pieces_count, prime, progress_callback);
     return (0..points.len()).map(|index| {
         let mut buffer = Vec::new();
@@ -23,17 +31,89 @@ pub fn generate_string<T>(secret: &str, pieces_count: i32, required_pieces_count
     }).collect();
 }
 
-pub fn generate_file<T>(secret_file_path: &str, pieces_count: i32, required_pieces_count: i32, prime: i32, mut progress_callback: T) -> Result<(), String>
+//# Process a secret file and generate an output file per piece
+//# Format:
+//# version\n          (text)
+//# pieceIndex\n       (text)
+//# prime\n            (text)
+//# originalFilename\n (text)
+//# raw binary data
+pub fn generate_file<T>(secret_file_name: &str, pieces_count: i32, required_pieces_count: i32, prime: i32, mut progress_callback: T) -> Result<(), String>
     where T: FnMut(f64) {
-    println!("TODO: generate file");
+    let parse_error = format!("Error parsing file name: {}", secret_file_name);
+    let secret_path = Path::new(secret_file_name);
+    let mut secret_file: File;
+    let mut progress: f64 = 0.0;
+
+    match File::open(secret_file_name) {
+        Err(error) => return Err(format!("Error opening {}: {}", secret_file_name, error)),
+        Ok(file) => secret_file = file,
+    }
+
+    let basename: String;
+    match secret_path.file_name() {
+        None => return Err(parse_error),
+        Some(path) => basename = String::from(path.to_str().unwrap()),
+    }
+    let total_progress: f64 = secret_path.metadata().unwrap().len() as f64;
+
+    let piece_names: Vec<PathBuf> = (0..pieces_count).map(|index| {
+        secret_path.with_file_name(format!("{}-{}.shard", secret_path.file_stem().unwrap().to_str().unwrap(), index + 1).as_str())
+    }).collect();
+
+    let piece_files: Vec<IOResult<File>> = piece_names.iter().map(|path| File::create(path)).collect();
+    if piece_files.iter().any(|file| file.is_err()) {
+        return Err(format!("Error creating output files in: {}", secret_path.parent().unwrap().display()));
+    }
+
+    // Actual writing begins here
+    for index in 0..piece_files.len() {
+        // Write header
+        let file = piece_files[index].as_ref().unwrap();
+        write_file(&file, &format!("{}\n", VERSION))?;
+        write_file(file, &format!("{}\n", index + 1))?;
+        write_file(file, &format!("{}\n", prime))?;
+        write_file(file, &format!("{}\n", basename))?;
+    }
+
+    let mut buffer = [0 as u8; BUFFER_SIZE];
+    let mut length: usize;
+
+    loop {
+        match secret_file.read(&mut buffer[..]) {
+            Err(error) => return Err(format!("Error reading file: {}", error)),
+            Ok(read) => length = read,
+        }
+
+        if length == 0 {
+            break;
+        }
+
+        let result = generate_string(&buffer[0..length], pieces_count, required_pieces_count, prime, |_|{});
+        for index in 0..result.len() {
+            // Write bodies
+            write_file(piece_files[index].as_ref().unwrap(), &result[index].1)?;
+        }
+        progress += length as f64;
+        progress_callback(progress / total_progress);
+    }
+
     return Result::Ok(());
+}
+
+fn write_file<T>(mut file: &File, data: &T) -> Result<(), String>
+    where T: AsRef<[u8]> + ?Sized {
+    return match file.write(data.as_ref()) {
+        Err(error) => Err(format!("Error writing file: {}", error)),
+        Ok(_) => Ok(()),
+    }
 }
 
 pub fn interpolate_string<TPiecesCollection, TBytesCollection, TCallback>(pieces: &TPiecesCollection, prime: i32, mut progress_callback: TCallback) -> Result<String, String>
     where TCallback: FnMut(f64),
-        TPiecesCollection: AsRef<[(i32, TBytesCollection)]>,
+        TPiecesCollection: AsRef<[(i32, TBytesCollection)]> + ?Sized,
         TBytesCollection: AsRef<[u8]> {
-    let mut my_pieces = pieces.as_ref();
+    let my_pieces = pieces.as_ref();
     let buffers: Vec<(i32, Vec<i16>)> = my_pieces.iter().map(|piece| {
         let mut my_piece = piece.1.as_ref();
         let mut string: Vec<i16> = Vec::new();
@@ -64,7 +144,7 @@ fn  generate_coefficients(required_pieces_count: i32, prime: i32) -> Vec<i32> {
 
 // Generate the first pieces_count points on the polynomial described by coefficients
 fn  generate_points<T>(secret: i32, pieces_count: i32, coefficients: &T, prime: i32) -> Vec<(i32, i32)>
-    where T: AsRef<[i32]> {
+    where T: AsRef<[i32]> + ?Sized {
     let my_coefficients: &[i32] = coefficients.as_ref();
     let mut pieces : Vec<(i32, i32)> = (0..(pieces_count + 1)).map(|x| {
         let mut sum = secret;
@@ -80,7 +160,7 @@ fn  generate_points<T>(secret: i32, pieces_count: i32, coefficients: &T, prime: 
 // Solve for the 0th-order term of the lagrange polynomial partially described by points
 // in the prime finite field for prime
 fn  interpolate_secret<T>(points: &T, prime: i32) -> Result<i32, String>
-    where T: AsRef<[(i32, i32)]> {
+    where T: AsRef<[(i32, i32)]> + ?Sized {
     let my_points: &[(i32, i32)] = points.as_ref();
     validate_points(&my_points, prime)?;
 
@@ -145,7 +225,7 @@ fn  modular_multiplicative_inverse<T>(a: &T, z: &T) -> (BigInt, BigInt)
 }
 
 fn  multiply_all<TValues, TElement>(values: &TValues) -> BigInt
-    where TValues: AsRef<[TElement]>,
+    where TValues: AsRef<[TElement]> + ?Sized ,
         TElement: Into<BigInt> + Clone {
     let mut total = BigInt::one();
     let my_values: &[TElement] = values.as_ref();
@@ -158,8 +238,8 @@ fn  multiply_all<TValues, TElement>(values: &TValues) -> BigInt
 }
 
 //# Generate the first piecesCount values for the polynomial for each byte in secret
-fn generate_buffer<TSecret, TProgress>(secret: TSecret, total_pieces: i32, required_pieces: i32, prime: i32, mut progress_callback: TProgress) -> Vec<(i32, Vec<i16>)>
-    where TSecret: AsRef<[u8]>,
+fn generate_buffer<TSecret, TProgress>(secret: &TSecret, total_pieces: i32, required_pieces: i32, prime: i32, mut progress_callback: TProgress) -> Vec<(i32, Vec<i16>)>
+    where TSecret: AsRef<[u8]> + ?Sized,
         TProgress: FnMut(f64) {
     let mut result: Vec<(i32, Vec<i16>)> = (0..total_pieces).map(|index| (index + 1, Vec::new())).collect();
     let my_secret = secret.as_ref();
@@ -176,7 +256,7 @@ fn generate_buffer<TSecret, TProgress>(secret: TSecret, total_pieces: i32, requi
 }
 
 fn  validate_points<T>(points: &T, prime: i32) -> Result<(), String>
-    where T: AsRef<[(i32, i32)]> {
+    where T: AsRef<[(i32, i32)]> + ?Sized {
     let my_points: &[(i32, i32)] = points.as_ref();
 
     if my_points.len() < 2 {
@@ -190,7 +270,7 @@ fn  validate_points<T>(points: &T, prime: i32) -> Result<(), String>
 }
 
 fn validate_buffers<TContainer, TByteBuffer>(buffers: &TContainer) -> Result<(), String>
-    where TContainer: AsRef<[(i32, TByteBuffer)]>,
+    where TContainer: AsRef<[(i32, TByteBuffer)]> + ?Sized,
         TByteBuffer: AsRef<[i16]> {
     let my_buffers = buffers.as_ref();
     let length = my_buffers[0].1.as_ref().len();
@@ -204,7 +284,7 @@ fn validate_buffers<TContainer, TByteBuffer>(buffers: &TContainer) -> Result<(),
 
 //# Solve for each set of points in points and return an ordered array of solutions
 fn interpolate_buffer<TContainer, TPointBuffer, TProgress>(points: &TContainer, prime: i32, mut progress_callback: TProgress) -> Result<Vec<u8>, String>
-    where TContainer: AsRef<[(i32, TPointBuffer)]>,
+    where TContainer: AsRef<[(i32, TPointBuffer)]> + ?Sized,
         TPointBuffer: AsRef<[i16]>,
         TProgress: FnMut(f64) {
     let my_points = points.as_ref();
@@ -354,7 +434,7 @@ mod  tests {
     }
 
     fn roundtrip_buffer<TSecret, TProgress>(secret: &TSecret, mut progress_callback: TProgress) -> Result<Vec<u8>, String>
-        where TSecret: AsRef<[u8]>,
+        where TSecret: AsRef<[u8]> + ?Sized,
             TProgress: FnMut(f64) {
         let total_pieces = 8;
         let required_pieces = 5;

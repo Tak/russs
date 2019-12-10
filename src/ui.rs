@@ -212,7 +212,7 @@ impl UI {
         UI::ui_clear_errors(&UI::get_object("mainInfoBar"), ResponseType::Close);
         generate_button.set_sensitive(false);
 
-        let pieces = sss::generate_string(&secret,
+        let pieces = sss::generate_string(&secret.as_str(),
                                           total_pieces,
                                           required_pieces,
                                           prime,
