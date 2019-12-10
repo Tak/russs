@@ -9,21 +9,19 @@ use num_bigint::{BigInt, ToBigInt};
 use num_traits::ToPrimitive;
 use num_traits::identities::{Zero, One};
 
-pub fn generate_string<T>(secret: &str, pieces_count: u32, required_pieces_count: u32, prime: u32, mut progress_callback: T) -> Result<Vec<Vec<u8>>, String>
+pub fn generate_string<T>(secret: &str, pieces_count: i32, required_pieces_count: i32, prime: i32, mut progress_callback: T) -> Vec<(i32, Vec<u8>)>
     where T: FnMut(f64) {
-    println!("TODO: generate string");
-    let mut pieces: Vec<Vec<u8>> = Vec::new();
-    for i in 1..pieces_count {
-        let mut piece: Vec<u8> = Vec::new();
-        for u in 1..4 as u8 {
-            piece.push(u);
+    let points = generate_buffer(secret, pieces_count, required_pieces_count, prime, progress_callback);
+    return (0..points.len()).map(|index| {
+        let mut buffer = Vec::new();
+        for value in &points[index].1 {
+            buffer.extend_from_slice(&value.to_le_bytes());
         }
-        pieces.push(piece);
-    }
-    return Result::Ok(pieces);
+        (points[index].0, buffer)
+    }).collect();
 }
 
-pub fn generate_file<T>(secret_file_path: &str, pieces_count: u32, required_pieces_count: u32, prime: u32, mut progress_callback: T) -> Result<(), String>
+pub fn generate_file<T>(secret_file_path: &str, pieces_count: i32, required_pieces_count: i32, prime: i32, mut progress_callback: T) -> Result<(), String>
     where T: FnMut(f64) {
     println!("TODO: generate file");
     return Result::Ok(());

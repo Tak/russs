@@ -202,8 +202,8 @@ impl UI {
 
     fn ui_generate_text(_button: &Button) {
         let secret = UI::get_object::<Entry>("entrySecretText").get_text().unwrap();
-        let total_pieces = UI::get_object::<SpinButton>("spinnerTotalPiecesText").get_value() as u32;
-        let required_pieces = UI::get_object::<SpinButton>("spinnerRequiredPiecesText").get_value() as u32;
+        let total_pieces = UI::get_object::<SpinButton>("spinnerTotalPiecesText").get_value() as i32;
+        let required_pieces = UI::get_object::<SpinButton>("spinnerRequiredPiecesText").get_value() as i32;
         let progress_bar: ProgressBar = UI::get_object("progressText");
         let total_progress = secret.len() as f64;
         let generate_button: Button = UI::get_object("buttonGenerateText");
@@ -212,25 +212,18 @@ impl UI {
         UI::ui_clear_errors(&UI::get_object("mainInfoBar"), ResponseType::Close);
         generate_button.set_sensitive(false);
 
-        match sss::generate_string(&secret,
+        let pieces = sss::generate_string(&secret,
                                           total_pieces,
                                           required_pieces,
                                           prime,
-                                          |progress| progress_bar.set_fraction(progress / total_progress)) {
-            Err(message) => {
-                UI::display_error(format!("Error generating shards for {}: {}", secret, message).as_str());
-                return;
-            },
-            Ok(pieces) => {
-                // Build result grid
-                let grid: Grid = UI::get_object("gridResultText");
-                UI::clear_grid(&grid);
-                for index in 0..pieces.len() as i32 {
-                    grid.insert_row(index);
-                    grid.attach(&UI::get_selectable_label(format!("{}", index).as_str(), 1.0), 0, index, 1, 1);
-                    grid.attach(&UI::get_selectable_label(UI::encode_base64(&pieces[index as usize]).as_str(), 0.25), 1, index, 1, 1);
-                }
-            },
+                                          |progress| progress_bar.set_fraction(progress / total_progress));
+        // Build result grid
+        let grid: Grid = UI::get_object("gridResultText");
+        UI::clear_grid(&grid);
+        for index in 0..pieces.len() as i32 {
+            grid.insert_row(index);
+            grid.attach(&UI::get_selectable_label(format!("{}", pieces[index as usize].0).as_str(), 1.0), 0, index, 1, 1);
+            grid.attach(&UI::get_selectable_label(UI::encode_base64(&pieces[index as usize].1).as_str(), 0.25), 1, index, 1, 1);
         }
 
         progress_bar.set_fraction(1.0);
@@ -257,8 +250,8 @@ impl UI {
 
     fn ui_generate_file(_button: &Button) {
         let prime = 7919;
-        let total_pieces = UI::get_object::<SpinButton>("spinnerTotalPiecesFile").get_value() as u32;
-        let required_pieces = UI::get_object::<SpinButton>("spinnerRequiredPiecesFile").get_value() as u32;
+        let total_pieces = UI::get_object::<SpinButton>("spinnerTotalPiecesFile").get_value() as i32;
+        let required_pieces = UI::get_object::<SpinButton>("spinnerRequiredPiecesFile").get_value() as i32;
         let progress_bar: ProgressBar = UI::get_object("progressFile");
         let generate_button: Button = UI::get_object("buttonGenerateFile");
 
