@@ -3,6 +3,8 @@ extern crate modulo;
 extern crate num_bigint;
 extern crate num_traits;
 
+use std::convert::TryInto;
+
 use rand::prelude::*;
 use modulo::Mod;
 use num_bigint::{BigInt, ToBigInt};
@@ -27,11 +29,25 @@ pub fn generate_file<T>(secret_file_path: &str, pieces_count: i32, required_piec
     return Result::Ok(());
 }
 
-pub fn interpolate_strings<TPiecesCollection, TBytesCollection, TCallback>(pieces: &TPiecesCollection, prime: i32, mut progress_callback: TCallback) -> Result<Vec<u8>, String>
+pub fn interpolate_string<TPiecesCollection, TBytesCollection, TCallback>(pieces: &TPiecesCollection, prime: i32, mut progress_callback: TCallback) -> Result<String, String>
     where TCallback: FnMut(f64),
         TPiecesCollection: AsRef<[(i32, TBytesCollection)]>,
         TBytesCollection: AsRef<[u8]> {
-                   return Result::Ok(Vec::new());
+    let mut my_pieces = pieces.as_ref();
+    let buffers: Vec<(i32, Vec<i16>)> = my_pieces.iter().map(|piece| {
+        let mut my_piece = piece.1.as_ref();
+        let mut string: Vec<i16> = Vec::new();
+
+        while !my_piece.is_empty() {
+            let (chunk, remainder) = my_piece.split_at(std::mem::size_of::<i16>());
+            my_piece = remainder;
+            string.push(i16::from_le_bytes(chunk.try_into().unwrap()));
+        }
+        (piece.0, string)
+    }).collect();
+
+    let result = interpolate_buffer(&buffers, prime, progress_callback)?;
+    return Ok(String::from_utf8(result).unwrap());
 }
 
 pub fn interpolate_file<T>(pieces: Vec<String>, destination: &str, mut progress_callback: Option<T>) -> Result<String, String>
@@ -366,5 +382,35 @@ mod  tests {
         let calculated_secret = roundtrip_buffer(&secret, |_|{}).unwrap();
         assert_eq!(secret, calculated_secret);
     }
+
+    fn roundtrip_string<T>(secret: &str, progress_callback: T) -> Result<String, String>
+        where T: Fn(f64) {
+        let total_pieces = 8;
+        let required_pieces = 5;
+        let prime = 5717;
+        let mut last_progress: f64 = 0.0;
+
+        let pieces = generate_string(secret, total_pieces, required_pieces, prime, |progress| {
+            assert!(progress >= last_progress);
+            last_progress = progress;
+            progress_callback(progress);
+        });
+
+        last_progress = 0.0;
+        return interpolate_string(&pieces, prime, |progress| {
+            assert!(progress >= last_progress);
+            last_progress = progress;
+            progress_callback(progress);
+        });
+    }
+
+    //    it "successfully roundtrips a string" do
+    #[test]
+    fn test_roundtrip_string() {
+        let secret: String = String::from("1234567890123456789012");
+        let calculated_secret = roundtrip_string(secret.as_str(), |_|{}).unwrap();
+        assert_eq!(secret, calculated_secret);
+    }
+
 
 }
