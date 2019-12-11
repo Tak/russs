@@ -285,7 +285,7 @@ impl UI {
                                         prime,
                                         |progress| progress_bar.set_fraction(progress / total_progress)) {
             Err(message) => UI::display_error(format!("Error generating shards for {}: {}", secret_file_path, message).as_str()),
-            Ok(()) => {
+            Ok(files) => {
                 INSTANCE.with(|instance| instance.file_result_path.replace(parent));
                 UI::get_object::<Frame>("frameResultsFile").show_all();
             },
@@ -407,7 +407,7 @@ impl UI {
         let destination = piece_files[0].get_parent().unwrap().get_path().unwrap().into_os_string().into_string().unwrap();
         let total_progress = piece_files[0].query_info::<Cancellable>("", FileQueryInfoFlags::NONE, None).unwrap().get_size() as f64;
 
-        match sss::interpolate_file(pieces, destination.as_str(), Some(|progress| progress_bar.set_fraction(progress / total_progress))) {
+        match sss::interpolate_file(&pieces, destination.as_str(), |progress| progress_bar.set_fraction(progress / total_progress)) {
             Err(message) => UI::display_error(format!("Error reconstructing file: {}", message).as_str()),
             Ok(output_file) => {
                 INSTANCE.with(|instance| instance.reconstructed_file_result_path.replace(output_file));

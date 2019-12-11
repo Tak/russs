@@ -15,8 +15,9 @@ use num_bigint::{BigInt, ToBigInt};
 use num_traits::ToPrimitive;
 use num_traits::identities::{Zero, One};
 
-pub const VERSION: u32 = 1;
+pub const VERSION: i32 = 1;
 const BUFFER_SIZE: usize = 8192;
+const MAX_SECRET_FILENAME_LENGTH: usize = BUFFER_SIZE - 50;
 
 pub fn generate_string<TCollection, TProgress>(secret: &TCollection, pieces_count: i32, required_pieces_count: i32, prime: i32, mut progress_callback: TProgress) -> Vec<(i32, Vec<u8>)>
     where TCollection: AsRef<[u8]> + ?Sized,
@@ -38,7 +39,7 @@ pub fn generate_string<TCollection, TProgress>(secret: &TCollection, pieces_coun
 //# prime\n            (text)
 //# originalFilename\n (text)
 //# raw binary data
-pub fn generate_file<T>(secret_file_name: &str, pieces_count: i32, required_pieces_count: i32, prime: i32, mut progress_callback: T) -> Result<(), String>
+pub fn generate_file<T>(secret_file_name: &str, pieces_count: i32, required_pieces_count: i32, prime: i32, mut progress_callback: T) -> Result<Vec<String>, String>
     where T: FnMut(f64) {
     let parse_error = format!("Error parsing file name: {}", secret_file_name);
     let secret_path = Path::new(secret_file_name);
@@ -98,7 +99,7 @@ pub fn generate_file<T>(secret_file_name: &str, pieces_count: i32, required_piec
         progress_callback(progress / total_progress);
     }
 
-    return Result::Ok(());
+    return Result::Ok(piece_names.iter().map(|path| String::from(path.to_str().unwrap())).collect());
 }
 
 fn write_file<T>(mut file: &File, data: &T) -> Result<(), String>
@@ -109,30 +110,203 @@ fn write_file<T>(mut file: &File, data: &T) -> Result<(), String>
     }
 }
 
+fn validate_piece_files<T>(piece_files: &T) -> Result<(), String>
+    where T: AsRef<[String]> {
+    let files = piece_files.as_ref();
+    let length;
+        match Path::new(&files[0]).metadata() {
+            Err(error) => return Err(format!("Error getting file size {}: {}", files[0].as_str(), error)),
+            Ok(metadata) => length = metadata.len(),
+        }
+    for file in &files[1..] {
+        match Path::new(file).metadata() {
+            Err(error) => return Err(format!("Error getting file size {}: {}", file.as_str(), error)),
+            Ok(metadata) => if metadata.len() != length {
+                return Err(format!("Mismatching file lengths: {} vs. {}", length, metadata.len()));
+            },
+        }
+    }
+
+    return Ok(());
+}
+
+fn validate_header<TInts, TStrings>(versions: &TInts, indices: &TInts, primes: &TInts, buffers: &Vec<[u8; BUFFER_SIZE]>, filenames: &TStrings) -> Result<(), String>
+    where TInts: AsRef<[i32]> + ?Sized,
+        TStrings: AsRef<[String]> + ?Sized,
+        {
+    // TODO: More detailed error messages
+
+    if versions.as_ref().iter().any(|version| *version != VERSION) {
+        return Err(String::from("Invalid versions for input files"));
+    }
+
+    let my_indices = indices.as_ref();
+    if (1..my_indices.len()).any(|i| my_indices[i..].iter().any(|value| *value == my_indices[i - 1])) {
+        return Err(String::from("Duplicate indices in input files"));
+    }
+
+    let my_primes = primes.as_ref();
+    let prime = my_primes[0];
+    if my_primes.iter().any(|value| *value != prime) {
+        return Err(String::from("Differing primes in input files"));
+    }
+
+    let my_filenames = filenames.as_ref();
+    let filename = &my_filenames[0];
+    if filename.len() > MAX_SECRET_FILENAME_LENGTH {
+        return Err(format!("Original filenames are too long: {}", filename.len()));
+    }
+    if my_filenames.iter().any(|value| value != filename) {
+        return Err(String::from("Differing filenames in input files"));
+    }
+
+    if buffers.iter().any(|buffer| buffer.as_ref().len() % 2 != 0) {
+        return Err(String::from("Input buffer has invalid (odd) length"));
+    }
+
+    if buffers.len() != my_indices.len() {
+        return Err(String::from("Internal error reading header"));
+    }
+
+    return Ok(());
+}
+
+pub fn read_headers<T>(pieces: &T) -> Result<(i32, String, Vec<i32>, Vec<[u8; BUFFER_SIZE]>, usize), String>
+    where T: AsRef<[File]> {
+
+    let mut indices: Vec<i32> = Vec::new();
+    let mut filenames: Vec<String> = Vec::new();
+    let mut primes: Vec<i32> = Vec::new();
+    let mut versions: Vec<i32> = Vec::new();
+    let mut buffers: Vec<[u8; BUFFER_SIZE]> = Vec::new();
+    let mut buffer_length = 0 as usize;
+
+    for mut piece in pieces.as_ref() {
+        let mut header = [0 as u8; BUFFER_SIZE];
+        let length;
+        match piece.read(&mut header) {
+            Err(error) => return Err(format!("Error reading file: {}", error)),
+            Ok(read) => length = read,
+        }
+
+        let headers: Vec<&[u8]> = header.splitn(5, |byte| *byte == '\n' as u8).collect();
+        if headers.len() < 5 {
+            return Err(String::from("Malformed header in input file"));
+        }
+        match String::from_utf8_lossy(headers[0]).into_owned().parse::<i32>() {
+            Err(error) => return Err(format!("Error parsing header version: {}", error)),
+            Ok(version) => versions.push(version),
+        }
+        match String::from_utf8_lossy(headers[1]).into_owned().parse::<i32>() {
+            Err(error) => return Err(format!("Error parsing header version: {}", error)),
+            Ok(index) => indices.push(index),
+        }
+        match String::from_utf8_lossy(headers[2]).into_owned().parse::<i32>() {
+            Err(error) => return Err(format!("Error parsing header prime: {}", error)),
+            Ok(prime) => primes.push(prime),
+        }
+        filenames.push(String::from_utf8_lossy(headers[3]).into_owned());
+
+        let mut buffer = [0 as u8; BUFFER_SIZE];
+        buffer[0..headers[4].len()].copy_from_slice(headers[4]);
+        match piece.read(&mut buffer[headers[4].len()..]) {
+            Err(error) => return Err(format!("Error reading file: {}", error)),
+            Ok(read) => {
+                if buffer_length == 0 {
+                    buffer_length = headers[4].len() + read;
+                } else if headers[4].len() + read != buffer_length {
+                    return Err(format!("Mismatched buffer sizes in input files"));
+                }
+                buffers.push(buffer);
+            }
+        }
+    }
+    validate_header(&versions, &indices, &primes, &buffers, &filenames)?;
+
+    return Ok((primes[0], filenames[0].clone(), indices, buffers, buffer_length));
+}
+
+fn binary_buffer_to_points<T>(buffer: &T) -> Vec<i16>
+    where T: AsRef<[u8]> + ?Sized {
+    let mut my_buffer = buffer.as_ref();
+    let mut points: Vec<i16> = Vec::new();
+
+    while !my_buffer.is_empty() {
+        let (chunk, remainder) = my_buffer.split_at(std::mem::size_of::<i16>());
+        my_buffer = remainder;
+        points.push(i16::from_le_bytes(chunk.try_into().unwrap()));
+    }
+
+    return points;
+}
+
 pub fn interpolate_string<TPiecesCollection, TBytesCollection, TCallback>(pieces: &TPiecesCollection, prime: i32, mut progress_callback: TCallback) -> Result<String, String>
     where TCallback: FnMut(f64),
         TPiecesCollection: AsRef<[(i32, TBytesCollection)]> + ?Sized,
         TBytesCollection: AsRef<[u8]> {
-    let my_pieces = pieces.as_ref();
-    let buffers: Vec<(i32, Vec<i16>)> = my_pieces.iter().map(|piece| {
-        let mut my_piece = piece.1.as_ref();
-        let mut string: Vec<i16> = Vec::new();
-
-        while !my_piece.is_empty() {
-            let (chunk, remainder) = my_piece.split_at(std::mem::size_of::<i16>());
-            my_piece = remainder;
-            string.push(i16::from_le_bytes(chunk.try_into().unwrap()));
-        }
-        (piece.0, string)
+    let point_buffers: Vec<(i32, Vec<i16>)> = pieces.as_ref().iter().map(|piece| {
+        (piece.0, binary_buffer_to_points(&piece.1))
     }).collect();
-
-    let result = interpolate_buffer(&buffers, prime, progress_callback)?;
+    let result = interpolate_buffer(&point_buffers, prime, progress_callback)?;
     return Ok(String::from_utf8(result).unwrap());
 }
 
-pub fn interpolate_file<T>(pieces: Vec<String>, destination: &str, mut progress_callback: Option<T>) -> Result<String, String>
-    where T: FnMut(f64) {
-    return Result::Ok(format!("{}/{}", destination, "secret.mp4"));
+//# Solve for each value encoded in a set of files and write a file built from the solution
+//# See generate_file for format
+pub fn interpolate_file<T, TProgress>(pieces: &T, destination: &str, mut progress_callback: TProgress) -> Result<String, String>
+    where T: AsRef<[String]> + ?Sized,
+        TProgress: FnMut(f64) {
+    let mut files: Vec<File> = Vec::new();
+    let my_pieces = pieces.as_ref();
+    validate_piece_files(&my_pieces)?;
+    for piece in my_pieces {
+        match File::open(Path::new(piece)) {
+            Err(error) => return Err(format!("Error opening input files: {}", error)),
+            Ok(file) => files.push(file),
+        }
+    }
+    let total_progress = Path::new(&my_pieces[0]).metadata().unwrap().len() as f64;
+    let mut progress = 0.0;
+    let prime: i32;
+
+    let (prime, output_filename, indices, mut buffers, buffer_length) = read_headers(&files)?;
+
+    let mut output_file;
+    let destination_path = Path::new(destination).join(&output_filename);
+    match File::create(&destination_path) {
+        Err(error) => return Err(format!("Error opening output file {}: {}", output_filename, error)),
+        Ok(file) => output_file = file,
+    }
+
+    let mut end_of_file = false;
+    let mut read = buffer_length;
+
+    while !end_of_file {
+        let point_buffers: Vec<(i32, Vec<i16>)> = indices.iter().map(|x| *x).zip(buffers.iter().map(|buffer| {
+            binary_buffer_to_points(&buffer[0..read])
+        })).collect();
+        let result = interpolate_buffer(&point_buffers, prime, |_|{})?;
+        match output_file.write(&result) {
+            Err(error) => return Err(format!("Error writing output file {}: {}", output_filename, error)),
+            Ok(written) => {},
+        }
+        progress += read as f64;
+        progress_callback(progress / total_progress);
+
+        for index in 0..files.len() {
+            match files[index].read(&mut buffers[index]) {
+                Err(error) => return Err(format!("Error reading file: {}", error)),
+                Ok(length) => {
+                    read = length;
+                    if read == 0 {
+                        end_of_file = true;
+                    }
+                },
+            }
+        }
+    }
+
+    return Ok(String::from(destination_path.as_os_str().to_str().unwrap()));
 }
 
 //    Generate (requiredPiecesCount - 1) polynomial coefficients less than prime
@@ -490,6 +664,64 @@ mod  tests {
         let secret: String = String::from("1234567890123456789012");
         let calculated_secret = roundtrip_string(secret.as_str(), |_|{}).unwrap();
         assert_eq!(secret, calculated_secret);
+    }
+
+    //    it "validates files" do
+    #[test]
+    fn test_validate_file() {
+        let destination = Path::new(file!()).parent().unwrap().parent().unwrap().join("tests").join("data");
+        let total_pieces = 8;
+        let required_pieces = 5;
+        let prime = 5717;
+        let input = destination.join("testInput");
+        let output = input.with_file_name("testOutput");
+
+        let pieces = generate_file(input.to_str().unwrap(), total_pieces, required_pieces, prime, |_|{}).unwrap();
+
+        let test_data = [
+            String::from(input.with_file_name("testInput-differingPrime.shard").to_str().unwrap()),
+            String::from(input.with_file_name("testInput-differingVersion.shard").to_str().unwrap()),
+            String::from(input.with_file_name("testInput-differingFilename.shard").to_str().unwrap()),
+            String::from(input.with_file_name("testInput-invalidFilename.shard").to_str().unwrap()),
+            pieces[0].clone(),
+        ];
+
+        for test_datum in &test_data {
+            let mut test_pieces = pieces.clone();
+            test_pieces.push(test_datum.clone());
+            assert!(interpolate_file(&test_pieces, destination.to_str().unwrap(), |_|{}).is_err());
+        }
+    }
+
+    //    it "successfully roundtrips a file" do
+    #[test]
+    fn test_roundtrip_file() {
+        let destination = Path::new(file!()).parent().unwrap().parent().unwrap().join("tests").join("data");
+        let input = destination.join("testInput");
+        let output = input.with_file_name("testOutput");
+        let total_pieces = 8;
+        let required_pieces = 5;
+        let prime = 5717;
+
+        // Because the shards preserve the original file path, we copy the input file to the expected output path
+        std::fs::copy(&input, &output).unwrap();
+
+        let pieces = generate_file(output.to_str().unwrap(), total_pieces, required_pieces, prime, |_|{}).unwrap();
+        for piece in &pieces {
+            assert!(Path::new(&piece).exists());
+        }
+
+        std::fs::remove_file(&output).unwrap();
+        assert!(!output.exists());
+
+        let result = interpolate_file(&pieces, destination.to_str().unwrap(), |_|{}).unwrap();
+        assert_eq!(result.as_str(), output.to_str().unwrap());
+
+        let mut input_data: Vec<u8> = Vec::new();
+        let mut output_data: Vec<u8> = Vec::new();
+        File::open(&input).unwrap().read_to_end(&mut input_data).unwrap();
+        File::open(&output).unwrap().read_to_end(&mut output_data).unwrap();
+        assert_eq!(input_data, output_data);
     }
 
 
