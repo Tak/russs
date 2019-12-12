@@ -4,7 +4,6 @@ extern crate num_bigint;
 extern crate num_traits;
 
 use std::fs::File;
-use std::io::Result as IOResult;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::convert::TryInto;
@@ -19,17 +18,35 @@ pub const VERSION: i32 = 1;
 const BUFFER_SIZE: usize = 8192;
 const MAX_SECRET_FILENAME_LENGTH: usize = BUFFER_SIZE - 50;
 
+#[allow(unused_mut)]
 pub fn generate_string<TCollection, TProgress>(secret: &TCollection, pieces_count: i32, required_pieces_count: i32, prime: i32, mut progress_callback: TProgress) -> Vec<(i32, Vec<u8>)>
     where TCollection: AsRef<[u8]> + ?Sized,
         TProgress: FnMut(f64) {
-    let points = generate_buffer(secret, pieces_count, required_pieces_count, prime, progress_callback);
-    return (0..points.len()).map(|index| {
-        let mut buffer = Vec::new();
-        for value in &points[index].1 {
-            buffer.extend_from_slice(&value.to_le_bytes());
-        }
-        (points[index].0, buffer)
+    return generate_buffer(secret, pieces_count, required_pieces_count, prime, progress_callback).iter().map(|point| {
+        (point.0, point.1.iter().map(|value| value.to_le_bytes().to_vec()).flatten().collect())
     }).collect();
+}
+
+fn open_file<P: AsRef<Path>>(path: P) -> Result<File, String> {
+    return match File::open(&path) {
+        Err(error) => Err(format!("Error opening {}: {}", path.as_ref().to_str().unwrap(), error)),
+        Ok(file) => Ok(file),
+    }
+}
+
+fn create_file<P: AsRef<Path>>(path: P) -> Result<File, String> {
+    return match File::create(&path) {
+        Err(error) => Err(format!("Error opening {}: {}", path.as_ref().to_str().unwrap(), error)),
+        Ok(file) => Ok(file),
+    }
+}
+
+fn get_file_size<P: AsRef<Path>>(path: P) -> Result<f64, String> {
+    let my_path = path.as_ref();
+    return match my_path.metadata() {
+        Err(error) => Err(format!("Error getting file size for {}: {}", my_path.to_str().unwrap(), error)),
+        Ok(metadata) => Ok(metadata.len() as f64),
+    }
 }
 
 //# Process a secret file and generate an output file per piece
@@ -43,35 +60,31 @@ pub fn generate_file<T>(secret_file_name: &str, pieces_count: i32, required_piec
     where T: FnMut(f64) {
     let parse_error = format!("Error parsing file name: {}", secret_file_name);
     let secret_path = Path::new(secret_file_name);
-    let mut secret_file: File;
+    let secret_file = open_file(secret_file_name)?;
     let mut progress: f64 = 0.0;
 
-    match File::open(secret_file_name) {
-        Err(error) => return Err(format!("Error opening {}: {}", secret_file_name, error)),
-        Ok(file) => secret_file = file,
-    }
 
     let basename: String;
     match secret_path.file_name() {
         None => return Err(parse_error),
         Some(path) => basename = String::from(path.to_str().unwrap()),
     }
-    let total_progress: f64 = secret_path.metadata().unwrap().len() as f64;
+    let total_progress = get_file_size(secret_file_name)?;
 
     let piece_names: Vec<PathBuf> = (0..pieces_count).map(|index| {
         secret_path.with_file_name(format!("{}-{}.shard", secret_path.file_stem().unwrap().to_str().unwrap(), index + 1).as_str())
     }).collect();
 
-    let piece_files: Vec<IOResult<File>> = piece_names.iter().map(|path| File::create(path)).collect();
-    if piece_files.iter().any(|file| file.is_err()) {
-        return Err(format!("Error creating output files in: {}", secret_path.parent().unwrap().display()));
+    let mut piece_files: Vec<File> = Vec::new();
+    for path in &piece_names {
+        piece_files.push(create_file(path)?);
     }
 
     // Actual writing begins here
     for index in 0..piece_files.len() {
         // Write header
-        let file = piece_files[index].as_ref().unwrap();
-        write_file(&file, &format!("{}\n", VERSION))?;
+        let file = &piece_files[index];
+        write_file(file, &format!("{}\n", VERSION))?;
         write_file(file, &format!("{}\n", index + 1))?;
         write_file(file, &format!("{}\n", prime))?;
         write_file(file, &format!("{}\n", basename))?;
@@ -81,11 +94,7 @@ pub fn generate_file<T>(secret_file_name: &str, pieces_count: i32, required_piec
     let mut length: usize;
 
     loop {
-        match secret_file.read(&mut buffer[..]) {
-            Err(error) => return Err(format!("Error reading file: {}", error)),
-            Ok(read) => length = read,
-        }
-
+        length = read_file(&secret_file, &mut buffer[..])?;
         if length == 0 {
             break;
         }
@@ -93,7 +102,7 @@ pub fn generate_file<T>(secret_file_name: &str, pieces_count: i32, required_piec
         let result = generate_string(&buffer[0..length], pieces_count, required_pieces_count, prime, |_|{});
         for index in 0..result.len() {
             // Write bodies
-            write_file(piece_files[index].as_ref().unwrap(), &result[index].1)?;
+            write_file(&piece_files[index], &result[index].1)?;
         }
         progress += length as f64;
         progress_callback(progress / total_progress);
@@ -102,28 +111,29 @@ pub fn generate_file<T>(secret_file_name: &str, pieces_count: i32, required_piec
     return Result::Ok(piece_names.iter().map(|path| String::from(path.to_str().unwrap())).collect());
 }
 
-fn write_file<T>(mut file: &File, data: &T) -> Result<(), String>
+fn read_file<T>(mut file: &File, data: &mut T) -> Result<usize, String>
+    where T: AsMut<[u8]> + ?Sized {
+    return match file.read(data.as_mut()) {
+        Err(error) => Err(format!("Error reading file: {}", error)),
+        Ok(read) => Ok(read),
+    }
+}
+
+fn write_file<T>(mut file: &File, data: &T) -> Result<usize, String>
     where T: AsRef<[u8]> + ?Sized {
     return match file.write(data.as_ref()) {
         Err(error) => Err(format!("Error writing file: {}", error)),
-        Ok(_) => Ok(()),
+        Ok(written) => Ok(written),
     }
 }
 
 fn validate_piece_files<T>(piece_files: &T) -> Result<(), String>
     where T: AsRef<[String]> {
     let files = piece_files.as_ref();
-    let length;
-        match Path::new(&files[0]).metadata() {
-            Err(error) => return Err(format!("Error getting file size {}: {}", files[0].as_str(), error)),
-            Ok(metadata) => length = metadata.len(),
-        }
+    let length= get_file_size(&files[0])?;
     for file in &files[1..] {
-        match Path::new(file).metadata() {
-            Err(error) => return Err(format!("Error getting file size {}: {}", file.as_str(), error)),
-            Ok(metadata) => if metadata.len() != length {
-                return Err(format!("Mismatching file lengths: {} vs. {}", length, metadata.len()));
-            },
+        if get_file_size(file)? != length {
+            return Err(format!("Mismatching file lengths: {} vs. {}", length, get_file_size(file)?));
         }
     }
 
@@ -181,13 +191,9 @@ pub fn read_headers<T>(pieces: &T) -> Result<(i32, String, Vec<i32>, Vec<[u8; BU
     let mut buffers: Vec<[u8; BUFFER_SIZE]> = Vec::new();
     let mut buffer_length = 0 as usize;
 
-    for mut piece in pieces.as_ref() {
+    for piece in pieces.as_ref() {
         let mut header = [0 as u8; BUFFER_SIZE];
-        let length;
-        match piece.read(&mut header) {
-            Err(error) => return Err(format!("Error reading file: {}", error)),
-            Ok(read) => length = read,
-        }
+        read_file(&piece, &mut header[..])?;
 
         let headers: Vec<&[u8]> = header.splitn(5, |byte| *byte == '\n' as u8).collect();
         if headers.len() < 5 {
@@ -209,17 +215,13 @@ pub fn read_headers<T>(pieces: &T) -> Result<(i32, String, Vec<i32>, Vec<[u8; BU
 
         let mut buffer = [0 as u8; BUFFER_SIZE];
         buffer[0..headers[4].len()].copy_from_slice(headers[4]);
-        match piece.read(&mut buffer[headers[4].len()..]) {
-            Err(error) => return Err(format!("Error reading file: {}", error)),
-            Ok(read) => {
-                if buffer_length == 0 {
-                    buffer_length = headers[4].len() + read;
-                } else if headers[4].len() + read != buffer_length {
-                    return Err(format!("Mismatched buffer sizes in input files"));
-                }
-                buffers.push(buffer);
-            }
+        let read = read_file(&piece, &mut buffer[headers[4].len()..])?;
+        if buffer_length == 0 {
+            buffer_length = headers[4].len() + read;
+        } else if headers[4].len() + read != buffer_length {
+            return Err(format!("Mismatched buffer sizes in input files"));
         }
+        buffers.push(buffer);
     }
     validate_header(&versions, &indices, &primes, &buffers, &filenames)?;
 
@@ -228,18 +230,14 @@ pub fn read_headers<T>(pieces: &T) -> Result<(i32, String, Vec<i32>, Vec<[u8; BU
 
 fn binary_buffer_to_points<T>(buffer: &T) -> Vec<i16>
     where T: AsRef<[u8]> + ?Sized {
-    let mut my_buffer = buffer.as_ref();
-    let mut points: Vec<i16> = Vec::new();
-
-    while !my_buffer.is_empty() {
-        let (chunk, remainder) = my_buffer.split_at(std::mem::size_of::<i16>());
-        my_buffer = remainder;
-        points.push(i16::from_le_bytes(chunk.try_into().unwrap()));
-    }
-
-    return points;
+    let my_buffer = buffer.as_ref();
+    return (0..(my_buffer.len() / 2)).map(|input_index| {
+        let buffer_index = input_index * 2;
+        i16::from_le_bytes(my_buffer[buffer_index..(buffer_index + 2)].try_into().unwrap())
+    }).collect();
 }
 
+#[allow(unused_mut)]
 pub fn interpolate_string<TPiecesCollection, TBytesCollection, TCallback>(pieces: &TPiecesCollection, prime: i32, mut progress_callback: TCallback) -> Result<String, String>
     where TCallback: FnMut(f64),
         TPiecesCollection: AsRef<[(i32, TBytesCollection)]> + ?Sized,
@@ -260,24 +258,15 @@ pub fn interpolate_file<T, TProgress>(pieces: &T, destination: &str, mut progres
     let my_pieces = pieces.as_ref();
     validate_piece_files(&my_pieces)?;
     for piece in my_pieces {
-        match File::open(Path::new(piece)) {
-            Err(error) => return Err(format!("Error opening input files: {}", error)),
-            Ok(file) => files.push(file),
-        }
+        files.push(open_file(piece)?);
     }
-    let total_progress = Path::new(&my_pieces[0]).metadata().unwrap().len() as f64;
+    let total_progress = get_file_size(&my_pieces[0])?;
     let mut progress = 0.0;
-    let prime: i32;
 
     let (prime, output_filename, indices, mut buffers, buffer_length) = read_headers(&files)?;
 
-    let mut output_file;
     let destination_path = Path::new(destination).join(&output_filename);
-    match File::create(&destination_path) {
-        Err(error) => return Err(format!("Error opening output file {}: {}", output_filename, error)),
-        Ok(file) => output_file = file,
-    }
-
+    let output_file = create_file(&destination_path)?;
     let mut end_of_file = false;
     let mut read = buffer_length;
 
@@ -286,22 +275,14 @@ pub fn interpolate_file<T, TProgress>(pieces: &T, destination: &str, mut progres
             binary_buffer_to_points(&buffer[0..read])
         })).collect();
         let result = interpolate_buffer(&point_buffers, prime, |_|{})?;
-        match output_file.write(&result) {
-            Err(error) => return Err(format!("Error writing output file {}: {}", output_filename, error)),
-            Ok(written) => {},
-        }
+        write_file(&output_file, &result)?;
         progress += read as f64;
         progress_callback(progress / total_progress);
 
         for index in 0..files.len() {
-            match files[index].read(&mut buffers[index]) {
-                Err(error) => return Err(format!("Error reading file: {}", error)),
-                Ok(length) => {
-                    read = length;
-                    if read == 0 {
-                        end_of_file = true;
-                    }
-                },
+            read = read_file(&files[index], &mut buffers[index][..])?;
+            if read == 0 {
+                end_of_file = true;
             }
         }
     }
@@ -556,10 +537,15 @@ mod  tests {
         }
     }
 
-
     // TODO: Move to integration tests
     // It's not straightforward to do integration tests with an executable crate,
     // need to reorganize into a lib + an executable before that will be feasible
+
+    fn choose_n_from<T>(source: &Vec<T>, n: usize) -> Vec<T>
+        where T: Clone {
+        let mut source_copy = source.clone();
+        return (0..n).map(|_| source_copy.remove(thread_rng().gen_range(0, source_copy.len())).clone()).collect();
+    }
 
     //    it "successfully roundtrips a single random value" do
     #[test]
@@ -576,12 +562,12 @@ mod  tests {
             assert!(point.1 < prime);
         }
 
-        assert_eq!(interpolate_secret(&points, prime)?, secret);
+        assert_eq!(interpolate_secret(&choose_n_from(&points, required_pieces as usize), prime)?, secret);
         Ok(())
     }
 
-//    it "generates expected point buffer given known inputs" do
-//    # https://en.wikipedia.org/wiki/Shamir%27s_Secret_Sharing
+    //    it "generates expected point buffer given known inputs" do
+    //    # https://en.wikipedia.org/wiki/Shamir%27s_Secret_Sharing
     #[test]
     fn test_generate_buffer() {
         let secret = "1234";
@@ -622,7 +608,7 @@ mod  tests {
         });
 
         last_progress = 0.0;
-        return interpolate_buffer(&pieces, prime, |progress| {
+        return interpolate_buffer(&choose_n_from(&pieces, required_pieces as usize), prime, |progress| {
             assert!(progress >= last_progress);
             last_progress = progress;
             progress_callback(progress);
@@ -651,7 +637,7 @@ mod  tests {
         });
 
         last_progress = 0.0;
-        return interpolate_string(&pieces, prime, |progress| {
+        return interpolate_string(&choose_n_from(&pieces, required_pieces as usize), prime, |progress| {
             assert!(progress >= last_progress);
             last_progress = progress;
             progress_callback(progress);
@@ -674,7 +660,6 @@ mod  tests {
         let required_pieces = 5;
         let prime = 5717;
         let input = destination.join("testInput");
-        let output = input.with_file_name("testOutput");
 
         let pieces = generate_file(input.to_str().unwrap(), total_pieces, required_pieces, prime, |_|{}).unwrap();
 
@@ -714,7 +699,7 @@ mod  tests {
         std::fs::remove_file(&output).unwrap();
         assert!(!output.exists());
 
-        let result = interpolate_file(&pieces, destination.to_str().unwrap(), |_|{}).unwrap();
+        let result = interpolate_file(&choose_n_from(&pieces, required_pieces as usize), destination.to_str().unwrap(), |_|{}).unwrap();
         assert_eq!(result.as_str(), output.to_str().unwrap());
 
         let mut input_data: Vec<u8> = Vec::new();
@@ -723,6 +708,4 @@ mod  tests {
         File::open(&output).unwrap().read_to_end(&mut output_data).unwrap();
         assert_eq!(input_data, output_data);
     }
-
-
 }

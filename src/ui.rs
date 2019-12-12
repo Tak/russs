@@ -282,7 +282,7 @@ impl UI {
                                         prime,
                                         |progress| UI::set_progress(&progress_bar, progress)) {
             Err(message) => UI::display_error(format!("Error generating shards for {}: {}", secret_file_path, message).as_str()),
-            Ok(files) => {
+            Ok(_) => {
                 INSTANCE.with(|instance| instance.file_result_path.replace(parent));
                 UI::get_object::<Frame>("frameResultsFile").show_all();
             },
