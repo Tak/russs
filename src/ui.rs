@@ -205,7 +205,6 @@ impl UI {
         let total_pieces = UI::get_object::<SpinButton>("spinnerTotalPiecesText").get_value() as i32;
         let required_pieces = UI::get_object::<SpinButton>("spinnerRequiredPiecesText").get_value() as i32;
         let progress_bar: ProgressBar = UI::get_object("progressText");
-        let total_progress = secret.len() as f64;
         let generate_button: Button = UI::get_object("buttonGenerateText");
         let prime = 5717;
 
@@ -216,7 +215,7 @@ impl UI {
                                           total_pieces,
                                           required_pieces,
                                           prime,
-                                          |progress| progress_bar.set_fraction(progress / total_progress));
+                                          |progress| UI::set_progress(&progress_bar, progress));
         // Build result grid
         let grid: Grid = UI::get_object("gridResultText");
         UI::clear_grid(&grid);
@@ -248,6 +247,13 @@ impl UI {
         UI::ui_validate_file();
     }
 
+    fn set_progress(progress_bar: &ProgressBar, progress: f64) {
+        progress_bar.set_fraction(progress);
+        while gtk::events_pending() {
+            gtk::main_iteration();
+        }
+    }
+
     fn ui_generate_file(_button: &Button) {
         let prime = 7919;
         let total_pieces = UI::get_object::<SpinButton>("spinnerTotalPiecesFile").get_value() as i32;
@@ -257,15 +263,6 @@ impl UI {
 
         let secret_file = UI::get_object::<FileChooserButton>("buttonChooseSecretFile").get_file().unwrap();
         let secret_file_path = secret_file.get_path().unwrap().into_os_string().into_string().unwrap();
-
-        let total_progress: f64;
-        match secret_file.query_info::<Cancellable>("", FileQueryInfoFlags::NONE, None) {
-            Err(_) => {
-                UI::display_error(format!("Error reading {}", secret_file_path.as_str()).as_str());
-                return;
-            },
-            Ok(info) => total_progress = info.get_size() as f64,
-        }
 
         let parent: String;
         match secret_file.get_parent() {
@@ -283,7 +280,7 @@ impl UI {
                                         total_pieces,
                                         required_pieces,
                                         prime,
-                                        |progress| progress_bar.set_fraction(progress / total_progress)) {
+                                        |progress| UI::set_progress(&progress_bar, progress)) {
             Err(message) => UI::display_error(format!("Error generating shards for {}: {}", secret_file_path, message).as_str()),
             Ok(files) => {
                 INSTANCE.with(|instance| instance.file_result_path.replace(parent));
@@ -360,11 +357,10 @@ impl UI {
             (grid.get_child_at(0, index).unwrap().downcast::<Entry>().unwrap().get_text().unwrap().as_str().parse::<i32>().unwrap(),
             base64::decode_config(grid.get_child_at(1, index).unwrap().downcast::<Entry>().unwrap().get_text().unwrap().as_str(), base64::URL_SAFE).unwrap())
         }).collect();
-        let total_progress = pieces[0].1.len() as f64;
 
-        match sss::interpolate_string(&pieces, prime, |progress| progress_bar.set_fraction(progress / total_progress)) {
+        match sss::interpolate_string(&pieces, prime, |progress| UI::set_progress(&progress_bar, progress)) {
             Ok(secret) => {
-                UI::get_object::<Label>("labelReconstructTextSecret").set_text(base64::encode_config(&secret, base64::URL_SAFE).as_str());
+                UI::get_object::<Label>("labelReconstructTextSecret").set_text(secret.as_str());
                 UI::get_object::<Box>("boxReconstructTextSecret").show_all();
             },
             Err(message) => UI::display_error(format!("Error reconstructing text: {}", message).as_str()),
@@ -405,9 +401,8 @@ impl UI {
             file.get_path().unwrap().into_os_string().into_string().unwrap()
         }).collect();
         let destination = piece_files[0].get_parent().unwrap().get_path().unwrap().into_os_string().into_string().unwrap();
-        let total_progress = piece_files[0].query_info::<Cancellable>("", FileQueryInfoFlags::NONE, None).unwrap().get_size() as f64;
 
-        match sss::interpolate_file(&pieces, destination.as_str(), |progress| progress_bar.set_fraction(progress / total_progress)) {
+        match sss::interpolate_file(&pieces, destination.as_str(), |progress| UI::set_progress(&progress_bar, progress)) {
             Err(message) => UI::display_error(format!("Error reconstructing file: {}", message).as_str()),
             Ok(output_file) => {
                 INSTANCE.with(|instance| instance.reconstructed_file_result_path.replace(output_file));
