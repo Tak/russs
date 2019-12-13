@@ -615,6 +615,15 @@ mod  tests {
         });
     }
 
+    //    it "reports progress for buffers" do
+    #[test]
+    fn test_report_progress_buffers() {
+        let secret = (0..32).map(|_| random::<u8>()).collect::<Vec<u8>>();
+        let mut progress_callbacks = 0;
+        roundtrip_buffer(&secret, |_| progress_callbacks += 1).unwrap();
+        assert_eq!(progress_callbacks, 2 * secret.len());
+    }
+
     //    it "successfully roundtrips a random buffer" do
     #[test]
     fn test_roundtrip_buffer() {
@@ -623,8 +632,8 @@ mod  tests {
         assert_eq!(secret, calculated_secret);
     }
 
-    fn roundtrip_string<T>(secret: &str, progress_callback: T) -> Result<String, String>
-        where T: Fn(f64) {
+    fn roundtrip_string<T>(secret: &str, mut progress_callback: T) -> Result<String, String>
+        where T: FnMut(f64) {
         let total_pieces = 8;
         let required_pieces = 5;
         let prime = 5717;
@@ -650,6 +659,15 @@ mod  tests {
         let secret: String = String::from("1234567890123456789012");
         let calculated_secret = roundtrip_string(secret.as_str(), |_|{}).unwrap();
         assert_eq!(secret, calculated_secret);
+    }
+
+    //    it "reports progress for strings" do
+    #[test]
+    fn test_report_progress_string() {
+        let secret: String = String::from("1234567890123456789012");
+        let mut progress_callbacks = 0;
+        roundtrip_string(secret.as_str(), |_| progress_callbacks += 1).unwrap();
+        assert_eq!(progress_callbacks, secret.len() * 2);
     }
 
     //    it "validates files" do
@@ -687,19 +705,22 @@ mod  tests {
         let total_pieces = 8;
         let required_pieces = 5;
         let prime = 5717;
+        let mut progress_callbacks = 0;
 
         // Because the shards preserve the original file path, we copy the input file to the expected output path
         std::fs::copy(&input, &output).unwrap();
 
-        let pieces = generate_file(output.to_str().unwrap(), total_pieces, required_pieces, prime, |_|{}).unwrap();
+        let pieces = generate_file(output.to_str().unwrap(), total_pieces, required_pieces, prime, |_| progress_callbacks += 1).unwrap();
         for piece in &pieces {
             assert!(Path::new(&piece).exists());
         }
 
         std::fs::remove_file(&output).unwrap();
         assert!(!output.exists());
+        assert!(progress_callbacks > 0);
+        progress_callbacks = 0;
 
-        let result = interpolate_file(&choose_n_from(&pieces, required_pieces as usize), destination.to_str().unwrap(), |_|{}).unwrap();
+        let result = interpolate_file(&choose_n_from(&pieces, required_pieces as usize), destination.to_str().unwrap(), |_| progress_callbacks += 1).unwrap();
         assert_eq!(result.as_str(), output.to_str().unwrap());
 
         let mut input_data: Vec<u8> = Vec::new();
@@ -707,5 +728,6 @@ mod  tests {
         File::open(&input).unwrap().read_to_end(&mut input_data).unwrap();
         File::open(&output).unwrap().read_to_end(&mut output_data).unwrap();
         assert_eq!(input_data, output_data);
+        assert!(progress_callbacks > 0);
     }
 }
