@@ -312,6 +312,12 @@ fn  generate_points<T>(secret: i32, pieces_count: i32, coefficients: &T, prime: 
     return pieces;
 }
 
+macro_rules! multiply_all {
+    ($( $x:expr ),+ ) => {
+        $( $x.fold(BigInt::one(), |total, value| total * value) )?
+    }
+}
+
 // Solve for the 0th-order term of the lagrange polynomial partially described by points
 // in the prime finite field for prime
 fn  interpolate_secret<T>(points: &T, prime: i32) -> Result<i32, String>
@@ -331,15 +337,14 @@ fn  interpolate_secret<T>(points: &T, prime: i32) -> Result<i32, String>
         let mut other_x_values = x_values.clone();
         let this_x = other_x_values.remove(index);
 
-        numerators.push(multiply_all(&other_x_values.iter().map(|x| 0 - *x).collect::<Vec<i32>>()));
-        denominators.push(multiply_all(&other_x_values.iter().map(|x| this_x - *x).collect::<Vec<i32>>()));
+        numerators.push(multiply_all!(other_x_values.iter().map(|x| 0 - *x)));
+        denominators.push(multiply_all!(other_x_values.iter().map(|x| this_x - *x)));
     }
 
-    let denominator = multiply_all(&denominators);
-    let mut numerator = BigInt::zero();
-    for index in 0..x_values.len() {
-        numerator += divide_and_apply_modulus(&Mod::modulo(&numerators[index] * &denominator * &y_values[index].to_bigint().unwrap(), &prime_big), &denominators[index], &prime_big);
-    }
+    let denominator = multiply_all!(denominators.iter());
+    let numerator = (0..x_values.len()).fold(BigInt::zero(), |total, index| {
+        total + divide_and_apply_modulus(&Mod::modulo(&numerators[index] * &denominator * &y_values[index].to_bigint().unwrap(), &prime_big), &denominators[index], &prime_big)
+    });
 
     let result = Mod::modulo(divide_and_apply_modulus(&numerator, &denominator, &prime_big) + prime_long, prime_long);
     return match result.to_i32() {
@@ -378,19 +383,6 @@ fn  modular_multiplicative_inverse<T>(a: &T, z: &T) -> (i64, i64)
     }
 
     return (last_x.into(), last_y.into());
-}
-
-fn  multiply_all<TValues, TElement>(values: &TValues) -> BigInt
-    where TValues: AsRef<[TElement]> + ?Sized ,
-        TElement: Into<BigInt> + Clone {
-    let mut total = BigInt::one();
-    let my_values: &[TElement] = values.as_ref();
-
-    for value in my_values {
-        total *= value.clone().into();
-    }
-
-    return total;
 }
 
 //# Generate the first piecesCount values for the polynomial for each byte in secret
@@ -510,7 +502,7 @@ mod  tests {
     #[test]
     fn  test_multiply_all() {
         let empty_values: [i32; 0] = [];
-        assert_eq!(multiply_all(&empty_values), BigInt::one());
+        assert_eq!(multiply_all!(empty_values.iter()), BigInt::one());
 
         let test_data = [
             ([1, 2, 3], 6),
@@ -519,7 +511,7 @@ mod  tests {
         ];
 
         for test_datum in &test_data {
-            assert_eq!(multiply_all(&test_datum.0), test_datum.1.to_bigint().unwrap());
+            assert_eq!(multiply_all!(test_datum.0.iter()), test_datum.1.to_bigint().unwrap());
         }
     }
 
