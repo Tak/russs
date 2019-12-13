@@ -321,6 +321,8 @@ fn  interpolate_secret<T>(points: &T, prime: i32) -> Result<i32, String>
 
     let x_values : Vec<i32> = my_points.iter().map(|point| point.0).collect();
     let y_values : Vec<i32> = my_points.iter().map(|point| point.1).collect();
+    let prime_long = prime as i64;
+    let prime_big = prime.to_bigint().unwrap();
 
     let mut numerators: Vec<BigInt> = Vec::new();
     let mut denominators: Vec<BigInt> = Vec::new();
@@ -336,47 +338,46 @@ fn  interpolate_secret<T>(points: &T, prime: i32) -> Result<i32, String>
     let denominator = multiply_all(&denominators);
     let mut numerator = BigInt::zero();
     for index in 0..x_values.len() {
-        numerator += divide_and_apply_modulus(&Mod::modulo(&numerators[index] * &denominator * &y_values[index].to_bigint().unwrap(), prime), &denominators[index], prime);
+        numerator += divide_and_apply_modulus(&Mod::modulo(&numerators[index] * &denominator * &y_values[index].to_bigint().unwrap(), &prime_big), &denominators[index], &prime_big);
     }
 
-    let result = Mod::modulo(divide_and_apply_modulus(&numerator, &denominator, prime) + prime, prime);
+    let result = Mod::modulo(divide_and_apply_modulus(&numerator, &denominator, &prime_big) + prime_long, prime_long);
     return match result.to_i32() {
         None => Err(format!("Error interpolating secret: integer overflow for {}", result)),
         Some(value) => Ok(value),
     }
 }
 
-fn  divide_and_apply_modulus<T>(numerator: &T, denominator: &T, prime: i32) -> BigInt
-    where T: Into<BigInt> + Clone {
-    return numerator.clone().into() * modular_multiplicative_inverse(&denominator.clone().into(), &prime.to_bigint().unwrap()).0;
+fn  divide_and_apply_modulus(numerator: &BigInt, denominator: &BigInt, prime: &BigInt) -> i64 {
+    return (numerator * modular_multiplicative_inverse(denominator, prime).0).to_i64().unwrap();
 }
 
 // https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm
-fn  modular_multiplicative_inverse<T>(a: &T, z: &T) -> (BigInt, BigInt)
+fn  modular_multiplicative_inverse<T>(a: &T, z: &T) -> (i64, i64)
     where T: Into<BigInt> + Clone {
-    let mut x = BigInt::zero();
-    let mut last_x = BigInt::one();
-    let mut y = BigInt::one();
-    let mut last_y = BigInt::zero();
+    let mut x: i64 = 0;
+    let mut last_x: i64 = 1;
+    let mut y: i64 = 1;
+    let mut last_y: i64 = 0;
     let mut a: BigInt = a.clone().into();
     let mut z: BigInt = z.clone().into();
 
     while z != BigInt::zero() {
-        let integer_quotient = &a / &z;
-        let new_a = z.clone();
-        z = Mod::modulo(&a , &z);
+        let integer_quotient: i64 = (&a / &z).to_i64().unwrap();
+        let new_a = z;
+        z = Mod::modulo(&a , &new_a);
         a = new_a;
 
-        let new_x = &last_x - (&integer_quotient * &x);
+        let new_x = last_x - (integer_quotient * x);
         last_x = x;
         x = new_x;
 
-        let new_y = &last_y - (&integer_quotient * &y);
+        let new_y = last_y - (integer_quotient * y);
         last_y = y;
         y = new_y;
     }
 
-    return (last_x, last_y);
+    return (last_x.into(), last_y.into());
 }
 
 fn  multiply_all<TValues, TElement>(values: &TValues) -> BigInt
@@ -532,8 +533,8 @@ mod  tests {
 
         for test_datum in &test_data {
             let inverse = modular_multiplicative_inverse(&(test_datum.0).0.to_bigint().unwrap(), &(test_datum.0).1.to_bigint().unwrap()).0;
-            assert_eq!(inverse, test_datum.1.to_bigint().unwrap());
-            assert_eq!(Mod::modulo((test_datum.0).0 * inverse, (test_datum.0).1), BigInt::one());
+            assert_eq!(inverse, test_datum.1 as i64);
+            assert_eq!(Mod::modulo((test_datum.0).0 * inverse, (test_datum.0).1), 1);
         }
     }
 
